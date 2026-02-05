@@ -48,10 +48,15 @@ impl AgentSkill for CommunityPulse {
             .unwrap_or("")
             .to_string();
 
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let pulse = serde_json::json!({
             "location": location,
             "trend": trend,
-            "event": event
+            "event": event,
+            "updated_at": updated_at
         });
         let value = pulse.to_string();
         self.knowledge

@@ -33,8 +33,13 @@ impl AgentSkill for ResearchAudit {
         let payload = payload.ok_or("ResearchAudit requires payload: { trace: object }")?;
         let trace = payload.get("trace").ok_or("trace required")?;
         let trace_id = uuid::Uuid::new_v4().to_string();
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let value = serde_json::json!({
             "trace_id": trace_id,
+            "created_at": created_at,
             "trace": trace
         });
         let value_str = serde_json::to_string(&value)?;

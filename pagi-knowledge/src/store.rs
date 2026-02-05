@@ -58,4 +58,23 @@ impl KnowledgeStore {
         let prev = tree.insert(key.as_bytes(), value)?;
         Ok(prev.map(|iv| iv.to_vec()))
     }
+
+    /// Removes the key in the tree for `slot_id` (1–8). Returns the previous value if present.
+    pub fn remove(&self, slot_id: u8, key: &str) -> Result<Option<Vec<u8>>, sled::Error> {
+        let tree = self.db.open_tree(Self::tree_name(slot_id))?;
+        let prev = tree.remove(key.as_bytes())?;
+        Ok(prev.map(|iv| iv.to_vec()))
+    }
+
+    /// Returns all keys in the tree for `slot_id` (1–8). Order is not guaranteed.
+    pub fn scan_keys(&self, slot_id: u8) -> Result<Vec<String>, sled::Error> {
+        let tree = self.db.open_tree(Self::tree_name(slot_id))?;
+        let keys: Vec<String> = tree
+            .iter()
+            .keys()
+            .filter_map(|k| k.ok())
+            .filter_map(|k| String::from_utf8(k.to_vec()).ok())
+            .collect();
+        Ok(keys)
+    }
 }

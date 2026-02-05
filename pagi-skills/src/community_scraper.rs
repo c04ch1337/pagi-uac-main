@@ -101,10 +101,15 @@ impl AgentSkill for CommunityScraper {
         };
 
         let event = extract_headlines_and_events(&html);
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let pulse = serde_json::json!({
             "location": location,
             "trend": DEFAULT_TREND,
-            "event": event
+            "event": event,
+            "updated_at": updated_at
         });
         let value = pulse.to_string();
         self.knowledge

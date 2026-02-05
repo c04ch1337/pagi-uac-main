@@ -1,0 +1,18 @@
+# UAC Gateway – global config and app identity
+# Override with PAGI_CONFIG path or PAGI__* env vars (e.g. PAGI__PORT=8080)
+
+app_name = "UAC Gateway"
+port = 3000
+storage_path = "./data"
+llm_mode = "mock"
+frontend_enabled = true
+
+[slot_labels]
+1 = "Brand Voice"
+2 = "Sales"
+3 = "Finance"
+4 = "Operations"
+5 = "Community"
+6 = "Products"
+7 = "Policies"
+8 = "Custom"

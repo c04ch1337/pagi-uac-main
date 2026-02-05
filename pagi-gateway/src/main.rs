@@ -1,4 +1,4 @@
-//! Axum-based API Gateway: entry point for UAC.
+//! Axum-based API Gateway: entry point for UAC. Config-driven via CoreConfig.
 
 use axum::{
     extract::{Path, State},
@@ -8,12 +8,14 @@ use axum::{
 };
 use pagi_knowledge::KnowledgeStore;
 use pagi_orchestrator::{BlueprintRegistry, Orchestrator, SkillRegistry};
-use pagi_shared::{Goal, TenantContext};
+use pagi_shared::{CoreConfig, Goal, TenantContext};
 use pagi_skills::{
-    CommunityPulse, CommunityScraper, DraftResponse, KnowledgeInsert, KnowledgeQuery, LeadCapture,
-    ModelRouter, ResearchAudit, SalesCloser,
+    CommunityPulse, CommunityScraper, DraftResponse, KnowledgeInsert, KnowledgePruner,
+    KnowledgeQuery, LeadCapture, ModelRouter, ResearchAudit, SalesCloser,
 };
+use std::path::Path as StdPath;
 use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -25,11 +27,16 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    let config = Arc::new(CoreConfig::load().expect("load CoreConfig"));
+    let storage = StdPath::new(&config.storage_path);
+    let memory_path = storage.join("pagi_vault");
+    let knowledge_path = storage.join("pagi_knowledge");
+
     let memory = Arc::new(
-        pagi_memory::MemoryManager::new().expect("open pagi_vault"),
+        pagi_memory::MemoryManager::open_path(&memory_path).expect("open pagi_vault"),
     );
     let knowledge = Arc::new(
-        pagi_knowledge::KnowledgeStore::new().expect("open pagi_knowledge"),
+        pagi_knowledge::KnowledgeStore::open_path(&knowledge_path).expect("open pagi_knowledge"),
     );
     let mut registry = SkillRegistry::new();
     registry.register(Arc::new(LeadCapture::new(Arc::clone(&memory))));
@@ -44,6 +51,7 @@ async fn main() {
     registry.register(Arc::new(ResearchAudit::new(Arc::clone(&knowledge))));
     registry.register(Arc::new(CommunityScraper::new(Arc::clone(&knowledge))));
     registry.register(Arc::new(SalesCloser::new(Arc::clone(&knowledge))));
+    registry.register(Arc::new(KnowledgePruner::new(Arc::clone(&knowledge))));
     let blueprint_path = std::env::var("PAGI_BLUEPRINT_PATH")
         .unwrap_or_else(|_| "config/blueprint.json".to_string());
     let blueprint = Arc::new(BlueprintRegistry::load_json_path(&blueprint_path));
@@ -52,16 +60,16 @@ async fn main() {
         Arc::clone(&blueprint),
     ));
 
-    let app = Router::new()
-        .route("/v1/execute", post(execute))
-        .route("/v1/research/trace/:trace_id", get(get_research_trace))
-        .with_state(AppState {
-            orchestrator,
-            knowledge,
-        });
+    let app = build_app(AppState {
+        config: Arc::clone(&config),
+        orchestrator,
+        knowledge,
+    });
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 3000));
-    tracing::info!("pagi-gateway listening on {}", addr);
+    let port = config.port;
+    let app_name = config.app_name.clone();
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    tracing::info!("{} listening on {}", app_name, addr);
     axum::serve(
         tokio::net::TcpListener::bind(addr).await.unwrap(),
         app,
@@ -70,10 +78,69 @@ async fn main() {
     .unwrap();
 }
 
+fn frontend_root_dir() -> std::path::PathBuf {
+    // Prefer a working-directory relative path for local development.
+    // Fall back to the workspace-root-relative path based on `pagi-gateway`'s manifest directory.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let from_cwd = cwd.join("pagi-frontend");
+    if from_cwd.exists() {
+        return from_cwd;
+    }
+
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("pagi-frontend")
+}
+
+fn build_app(state: AppState) -> Router {
+    let frontend_enabled = state.config.frontend_enabled;
+
+    let mut app = Router::new()
+        .route("/v1/status", get(status))
+        .route("/v1/execute", post(execute))
+        .route("/v1/research/trace/:trace_id", get(get_research_trace))
+        .with_state(state);
+
+    if frontend_enabled {
+        let frontend_dir = frontend_root_dir();
+        let index_file = frontend_dir.join("index.html");
+        let assets_dir = frontend_dir.join("assets");
+
+        // Map `/` -> `pagi-frontend/index.html`
+        app = app.route_service("/", ServeFile::new(index_file));
+
+        // Map `/assets/*` -> `pagi-frontend/assets/*` (CSS, images, etc.)
+        if assets_dir.exists() {
+            app = app.nest_service("/assets", ServeDir::new(assets_dir));
+        }
+
+        // Map `/ui/*` -> `pagi-frontend/*` (app.js, assets, and any other files)
+        app = app.nest_service("/ui", ServeDir::new(frontend_dir));
+    }
+
+    app
+}
+
 #[derive(Clone)]
 pub(crate) struct AppState {
+    pub(crate) config: Arc<CoreConfig>,
     pub(crate) orchestrator: Arc<Orchestrator>,
     pub(crate) knowledge: Arc<KnowledgeStore>,
+}
+
+/// GET /v1/status – app identity and slot labels from config.
+async fn status(State(state): State<AppState>) -> axum::Json<serde_json::Value> {
+    let labels: std::collections::HashMap<u8, String> = state.config.slot_labels_map();
+    let labels_json: std::collections::HashMap<String, String> = labels
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    axum::Json(serde_json::json!({
+        "app_name": state.config.app_name,
+        "port": state.config.port,
+        "llm_mode": state.config.llm_mode,
+        "slot_labels": labels_json,
+    }))
 }
 
 #[derive(serde::Deserialize)]
@@ -124,6 +191,61 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
+    fn test_config() -> CoreConfig {
+        CoreConfig {
+            app_name: "Test Gateway".to_string(),
+            port: 3000,
+            storage_path: "./data".to_string(),
+            llm_mode: "mock".to_string(),
+            frontend_enabled: false,
+            slot_labels: std::collections::HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_status_returns_app_identity_and_slot_labels() {
+        let config = CoreConfig {
+            app_name: "Test Identity".to_string(),
+            port: 4000,
+            storage_path: "./data".to_string(),
+            llm_mode: "mock".to_string(),
+            frontend_enabled: false,
+            slot_labels: [
+                ("1".to_string(), "Legal Compliance".to_string()),
+                ("2".to_string(), "Marketing Tone".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let knowledge = Arc::new(
+            pagi_knowledge::KnowledgeStore::open_path("./data/pagi_knowledge_status_test").unwrap(),
+        );
+        let mut registry = SkillRegistry::new();
+        registry.register(Arc::new(KnowledgeQuery::new(Arc::clone(&knowledge))));
+        let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
+        let app = Router::new()
+            .route("/v1/status", get(status))
+            .with_state(AppState {
+                config: Arc::new(config),
+                orchestrator,
+                knowledge,
+            });
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/status")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["app_name"], "Test Identity");
+        assert_eq!(json["port"], 4000);
+        assert_eq!(json["llm_mode"], "mock");
+        assert_eq!(json["slot_labels"]["1"], "Legal Compliance");
+        assert_eq!(json["slot_labels"]["2"], "Marketing Tone");
+    }
+
     #[tokio::test]
     async fn test_execute_lead_capture() {
         let memory = Arc::new(pagi_memory::MemoryManager::new().unwrap());
@@ -135,7 +257,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+                config: Arc::new(test_config()),
+                orchestrator,
+                knowledge,
+            });
 
         let body = serde_json::json!({
             "tenant_id": "test-tenant",
@@ -163,6 +289,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_frontend_index_served_when_enabled() {
+        let knowledge = Arc::new(
+            pagi_knowledge::KnowledgeStore::open_path("./data/pagi_frontend_index_test").unwrap(),
+        );
+        let orchestrator = Arc::new(Orchestrator::new(Arc::new(SkillRegistry::new())));
+
+        let config = CoreConfig {
+            app_name: "Test UI".to_string(),
+            port: 0,
+            storage_path: "./data".to_string(),
+            llm_mode: "mock".to_string(),
+            frontend_enabled: true,
+            slot_labels: std::collections::HashMap::new(),
+        };
+
+        let app = build_app(AppState {
+            config: Arc::new(config),
+            orchestrator,
+            knowledge,
+        });
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(body.contains("PAGI Gateway UI"), "Drop-In UI title should be present");
+        assert!(
+            body.contains("Drop your AI Studio") || body.contains("pagi-frontend"),
+            "Drop-In UI hint should be reachable when enabled; got body len {}",
+            body.len()
+        );
+    }
+
+    #[tokio::test]
     async fn test_kb1_brand_voice_retrieve() {
         let knowledge = Arc::new(
             pagi_knowledge::KnowledgeStore::open_path("./data/pagi_knowledge_test")
@@ -177,7 +344,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let body = serde_json::json!({
             "tenant_id": "test-tenant",
@@ -215,7 +386,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let insert_body = serde_json::json!({
             "tenant_id": "test-tenant",
@@ -292,7 +467,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         // 1. Capture a lead to get lead_id (IngestData)
         let lead_body = serde_json::json!({
@@ -384,7 +563,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         // 1. Capture a lead (IngestData)
         let lead_body = serde_json::json!({
@@ -459,7 +642,11 @@ mod tests {
         let app = Router::new()
             .route("/v1/execute", post(execute))
             .route("/v1/research/trace/:trace_id", get(get_research_trace))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         // 1. Capture a lead (IngestData)
         let lead_body = serde_json::json!({
@@ -554,7 +741,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let mock_html = r#"<!DOCTYPE html>
 <html><body>
@@ -629,7 +820,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let mock_html = r#"<html><body><h1>Fall Festival Next Week</h1></body></html>"#;
         let body = serde_json::json!({
@@ -681,7 +876,11 @@ mod tests {
         let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let lead_body = serde_json::json!({
             "tenant_id": "test-tenant",
@@ -751,7 +950,11 @@ mod tests {
         ));
         let app = Router::new()
             .route("/v1/execute", post(execute))
-            .with_state(AppState { orchestrator, knowledge });
+            .with_state(AppState {
+            config: Arc::new(test_config()),
+            orchestrator,
+            knowledge,
+        });
 
         let body = serde_json::json!({
             "tenant_id": "test-tenant",
@@ -787,5 +990,74 @@ mod tests {
             "generated should reflect scraped content or mock; got: {}",
             generated
         );
+    }
+
+    #[tokio::test]
+    async fn test_knowledge_pruner_removes_old_kb5_and_kb8_entries() {
+        let knowledge = Arc::new(
+            pagi_knowledge::KnowledgeStore::open_path("./data/pagi_knowledge_pruner_test").unwrap(),
+        );
+        let old_ts = 1_u64;
+        let old_pulse = serde_json::json!({
+            "location": "Test",
+            "trend": "old",
+            "event": "Stale event",
+            "updated_at": old_ts
+        });
+        let old_trace = serde_json::json!({
+            "trace_id": "old-trace-id",
+            "created_at": old_ts,
+            "trace": { "intent": "test" }
+        });
+        knowledge
+            .insert(5, "stale_pulse", old_pulse.to_string().as_bytes())
+            .unwrap();
+        knowledge
+            .insert(8, "old-trace-id", old_trace.to_string().as_bytes())
+            .unwrap();
+
+        let mut registry = SkillRegistry::new();
+        registry.register(Arc::new(KnowledgePruner::new(Arc::clone(&knowledge))));
+        let orchestrator = Arc::new(Orchestrator::new(Arc::new(registry)));
+        let app = Router::new()
+            .route("/v1/execute", post(execute))
+            .with_state(AppState {
+                config: Arc::new(test_config()),
+                orchestrator,
+                knowledge: Arc::clone(&knowledge),
+            });
+
+        let prune_body = serde_json::json!({
+            "tenant_id": "test-tenant",
+            "goal": {
+                "ExecuteSkill": {
+                    "name": "KnowledgePruner",
+                    "payload": { "kb5_max_age_days": 1, "kb8_max_age_days": 1 }
+                }
+            }
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/execute")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&prune_body).unwrap()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["skill"], "KnowledgePruner");
+        assert_eq!(json["kb5_pruned"], 1);
+        assert_eq!(json["kb8_pruned"], 1);
+        assert!(json["kb5_removed_keys"].as_array().unwrap().contains(&serde_json::json!("stale_pulse")));
+        assert!(json["kb8_removed_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("old-trace-id")));
+
+        assert!(knowledge.get(5, "stale_pulse").unwrap().is_none());
+        assert!(knowledge.get(8, "old-trace-id").unwrap().is_none());
     }
 }

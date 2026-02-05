@@ -10,6 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.5", features = ["fs"] }
 pagi-knowledge = { path = "../pagi-knowledge" }
 pagi-memory = { path = "../pagi-memory" }
 pagi-orchestrator = { path = "../pagi-orchestrator" }

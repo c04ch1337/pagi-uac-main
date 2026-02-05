@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PAGI – Gateway UI</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>PAGI Gateway UI</h1>
+      <p class="muted">Drop your AI Studio files into <code>pagi-frontend/</code>.</p>
+
+      <section class="card">
+        <h2>AutonomousGoal</h2>
+        <label>
+          Intent
+          <input id="intent" type="text" value="Draft a helpful response" />
+        </label>
+        <label>
+          Tenant ID
+          <input id="tenant" type="text" value="default" />
+        </label>
+        <button id="run">Execute</button>
+        <pre id="out" class="out"></pre>
+      </section>
+    </main>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>
+

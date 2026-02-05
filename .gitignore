@@ -1,0 +1,6 @@
+# Rust build artifacts
+/target/
+
+# Gateway runtime state (local databases, snapshots, test vaults)
+/pagi-gateway/data/
+
