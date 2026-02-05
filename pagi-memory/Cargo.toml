@@ -1,0 +1,9 @@
+[package]
+name = "pagi-memory"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dashmap = { workspace = true }
+sled = { workspace = true }
+pagi-shared = { path = "../pagi-shared" }

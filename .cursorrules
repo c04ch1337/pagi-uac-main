@@ -1,0 +1,6 @@
+# Universal AGI Core (UAC)
+
+- All crates use the `pagi-` prefix.
+- Prefer 100% Rust; use `tokio` for async.
+- Follow workspace dependencies from root `Cargo.toml`; use `path = "../crate-name"` for local crates.
+- Gateway is the single binary entry point; library crates are pagi-orchestrator, pagi-memory, pagi-knowledge, pagi-skills, pagi-shared.

@@ -1,0 +1,6 @@
+{
+  "intents": {
+    "respond to lead": ["DraftResponse", "SalesCloser", "ModelRouter"],
+    "summarize news": ["CommunityScraper", "ModelRouter"]
+  }
+}

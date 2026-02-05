@@ -1,0 +1,20 @@
+[package]
+name = "pagi-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pagi-knowledge = { path = "../pagi-knowledge" }
+pagi-memory = { path = "../pagi-memory" }
+pagi-orchestrator = { path = "../pagi-orchestrator" }
+pagi-shared = { path = "../pagi-shared" }
+pagi-skills = { path = "../pagi-skills" }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
