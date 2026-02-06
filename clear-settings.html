@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clear PAGI Studio UI Settings</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #1a1a1a;
+            color: #ffffff;
+        }
+        .container {
+            text-align: center;
+            padding: 40px;
+            background-color: #2a2a2a;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+        }
+        h1 {
+            color: #f97316;
+            margin-bottom: 20px;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #3a3a3a;
+        }
+        .success {
+            background-color: #166534;
+            border: 1px solid #22c55e;
+        }
+        .error {
+            background-color: #7f1d1d;
+            border: 1px solid #ef4444;
+        }
+        button {
+            background-color: #f97316;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 20px;
+        }
+        button:hover {
+            background-color: #ea580c;
+        }
+        .instructions {
+            text-align: left;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #3a3a3a;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #f97316;
+        }
+        .instructions ol {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧹 Clear PAGI Studio UI Settings</h1>
+        
+        <div id="status" class="status">
+            <p>Click the button below to clear your localStorage settings.</p>
+        </div>
+        
+        <button onclick="clearSettings()">Clear Settings</button>
+        
+        <div class="instructions">
+            <h3>After clearing settings:</h3>
+            <ol>
+                <li>Refresh the Studio UI page (http://127.0.0.1:3001)</li>
+                <li>The UI will now use the correct default API URL: <code>http://127.0.0.1:8001/api/v1/chat</code></li>
+                <li>Try sending a message again</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        function clearSettings() {
+            const statusDiv = document.getElementById('status');
+            
+            try {
+                // Clear the specific keys
+                const settingsRemoved = localStorage.removeItem('agi_settings');
+                const historyRemoved = localStorage.removeItem('agi_chat_history');
+                
+                // Check if they existed
+                const hadSettings = localStorage.getItem('agi_settings') !== null;
+                const hadHistory = localStorage.getItem('agi_chat_history') !== null;
+                
+                statusDiv.className = 'status success';
+                statusDiv.innerHTML = `
+                    <h3>✅ Settings Cleared Successfully!</h3>
+                    <p>Removed: agi_settings ${hadSettings ? '(was present)' : '(was not present)'}</p>
+                    <p>Removed: agi_chat_history ${hadHistory ? '(was present)' : '(was not present)'}</p>
+                    <p><strong>Next step:</strong> Refresh your Studio UI page to apply the changes.</p>
+                `;
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.innerHTML = `
+                    <h3>❌ Error Clearing Settings</h3>
+                    <p>${error.message}</p>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>
