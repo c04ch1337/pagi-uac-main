@@ -1,0 +1,17 @@
+[package]
+name = "pagi-offsec-ui"
+version = "0.1.0"
+edition = "2021"
+description = "OffSec UI add-on: Ratatui TUI, raw data streams, network logs, keyboard-driven"
+
+[[bin]]
+name = "pagi-offsec-ui"
+path = "src/main.rs"
+
+[dependencies]
+pagi-core = { path = "../../crates/pagi-core" }
+pagi-skills = { path = "../../crates/pagi-skills" }
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1.0"

@@ -1,0 +1,9 @@
+/* PAGI Studio interface — minimal base. Tailwind is loaded via CDN in index.html. */
+:root {
+  --pagi-bg: #fafafa;
+  --pagi-text: #18181b;
+}
+.dark {
+  --pagi-bg: #09090b;
+  --pagi-text: #e4e4e7;
+}

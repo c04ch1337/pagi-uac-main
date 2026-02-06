@@ -1,0 +1,15 @@
+[package]
+name = "pagi-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pagi-core = { path = "../../crates/pagi-core" }
+pagi-skills = { path = "../../crates/pagi-skills" }
+
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+dotenvy = { workspace = true }
+serde_json = { workspace = true }
+

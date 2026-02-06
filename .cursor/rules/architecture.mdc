@@ -1,0 +1,22 @@
+---
+description: Critical architecture and tech stack constraints for the project.
+globs: **/*
+---
+# Architecture Standards
+
+- **Language:** Strictly **Rust** for all backend and logic implementations.
+- **Environment:** **Bare Metal** implementation only. No Docker/Containers.
+- **Networking:**
+  - Backend/API ports: `8001 - 8099`
+  - Frontend/UI ports: `3001 - 3099`
+- **Memory System:** Multi-layer (Short-term & Long-term).
+- **Knowledge Bases:** Maintain 7 to 8 distinct Knowledge Bases.
+- **Skills:** Implementation must follow a modular "Skills-type" solution for the Orchestrator.
+
+---
+
+# Verification Law
+
+- **No blind approvals:** An implementation is NOT successful until the Agent has opened the Cursor Browser and confirmed the UI is rendered and the API handshake is complete.
+- **Port ranges:** Strictly enforce 8001–8099 (Backend) and 3001–3099 (Frontend).
+- **Bare metal:** Never suggest Docker as a solution for port conflicts; use `Stop-Process` (Windows) or `fuser` (Unix) instead.

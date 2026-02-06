@@ -1,0 +1,16 @@
+[package]
+name = "pagi-companion-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Companion UI add-on: high-fidelity Slint GUI, character-engine traits, avatar rendering"
+
+[[bin]]
+name = "pagi-companion-ui"
+path = "src/main.rs"
+
+[dependencies]
+pagi-core = { path = "../../crates/pagi-core" }
+pagi-skills = { path = "../../crates/pagi-skills" }
+slint = "1.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1.0"

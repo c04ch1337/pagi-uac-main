@@ -1,8 +1,0 @@
-[package]
-name = "pagi-knowledge"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-sled = { workspace = true }
-pagi-shared = { path = "../pagi-shared" }

@@ -1,8 +1,9 @@
 # UAC Gateway – global config and app identity
-# Override with PAGI_CONFIG path or PAGI__* env vars (e.g. PAGI__PORT=8080)
+# Override with PAGI_CONFIG path or PAGI__* env vars (e.g. PAGI__PORT=8002)
+# Backend/API port range: 8001-8099. Gateway default: 8001.
 
 app_name = "UAC Gateway"
-port = 3000
+port = 8001
 storage_path = "./data"
 llm_mode = "mock"
 frontend_enabled = true

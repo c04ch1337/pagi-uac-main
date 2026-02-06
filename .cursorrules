@@ -1,6 +1,37 @@
-# Universal AGI Core (UAC)
+# PAGI Workspace Laws
 
-- All crates use the `pagi-` prefix.
-- Prefer 100% Rust; use `tokio` for async.
-- Follow workspace dependencies from root `Cargo.toml`; use `path = "../crate-name"` for local crates.
-- Gateway is the single binary entry point; library crates are pagi-orchestrator, pagi-memory, pagi-knowledge, pagi-skills, pagi-shared.
+Post-migration: this is a **multi-crate workspace**. Do not drift back to the old structure (no top-level pagi-shared, pagi-orchestrator, pagi-memory, pagi-knowledge—those live inside `crates/pagi-core`).
+
+---
+
+## 1. Dependency Direction
+- Add-ons MUST depend on `pagi-core`.
+- `pagi-core` MUST NOT depend on any add-on or UI crate.
+- Skills in `pagi-skills` depend on `pagi-core`.
+
+---
+
+## 2. Shared Brain Usage
+- When an agent adds a feature to a UI (e.g., a new memory visualization), the actual logic/data-fetching must be implemented in **`crates/pagi-core`** first, then called by the add-on.
+
+---
+
+## 3. Naming Convention
+- New add-ons must follow the pattern: **`add-ons/pagi-[name]-ui`**.
+- Keep all **`pagi-`** prefixes for internal modules.
+
+---
+
+## 4. The Studio Rule
+- **`pagi-studio-ui`** is the reference implementation. If a new skill or KB is added to `pagi-core`, it must be **exposed in the Studio UI for testing** before being ported to specialized clones.
+
+---
+
+## 5. Workspace Layout (Reference)
+- **`crates/pagi-core`** — The brain (shared types, orchestrator, memory, 8-slot knowledge). No GUI deps.
+- **`add-ons/pagi-studio-ui`** — Primary/reference frontend (Developer's Cockpit).
+- **`add-ons/pagi-*-ui`** — Other UIs (companion, offsec, personal).
+- **`pagi-gateway`** — Single HTTP binary; loads config, memory, KB, skills, serves API.
+- **`pagi-skills`** — Default skill implementations; depend on `pagi-core` only.
+- Paths: use **`path = "../../crates/pagi-core"`** from add-ons; **bare-metal**, no Docker; config/paths relative to executable or local files.
+- **Networking:** Backend/API ports **8001–8099**; Frontend/UI ports **3001–3099**. See `.cursor/rules/architecture.mdc` for full architecture constraints.

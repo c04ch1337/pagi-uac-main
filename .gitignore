@@ -3,4 +3,31 @@
 
 # Gateway runtime state (local databases, snapshots, test vaults)
 /pagi-gateway/data/
+/data/
 
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node modules
+node_modules/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Sled lock files
+*.lock

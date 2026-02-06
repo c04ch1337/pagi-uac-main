@@ -1,0 +1,41 @@
+---
+description: Rules for starting and verifying the bare-metal environment.
+globs: **/*.rs, **/*.tsx, **/*.ts
+---
+# Verification Protocol
+
+- **Startup:** Always run services in parallel using separate named terminals.
+- **Tools:** Use the integrated Browser Tool to verify UI state. Do not rely solely on terminal exit codes.
+- **Port mapping:**
+  - API: `8001-8099`
+  - UI: `3001-3099`
+- **Success criteria:** A task is not "Done" until the Agent has:
+  1. Started the Rust binary (or dev server).
+  2. Verified the UI via the Browser Tool.
+  3. Confirmed zero console errors in the browser.
+
+## Current stack (single gateway)
+
+- **Backend:** One terminal — `cargo run -p pagi-gateway` (Orchestrator, Skills, KB APIs on port **8001**).
+- **Frontend:** Prefer **Vite** when the gateway is already running: `npm run dev` in `add-ons/pagi-studio-ui/assets/studio-interface` (serves UI on **3001**; React talks to **8001** for API and log stream). The Rust **pagi-studio-ui-server** (also **3001**) opens its own Sled DB and will conflict with the gateway if both use the same `data/` directory; use it only when running without the gateway.
+- **Optional:** Third terminal — `cargo run -p pagi-control-panel` (egui control panel; no HTTP port).
+- **Verification:** Navigate to `http://127.0.0.1:3001`, confirm API reachability (e.g. `http://127.0.0.1:8001/api/v1/health`), confirm the Log Terminal at the bottom shows connection to `http://127.0.0.1:8001/api/v1/logs`, and check browser console for zero 404/CORS errors.
+
+## Pre-flight check
+
+Before starting the gateway, run `cargo run -p pagi-gateway -- --verify`. This command:
+- Opens all 8 KB Sled trees and closes them (detects file locks).
+- Checks if port **8001** is available.
+- Exits **0** on success, **non-zero** on failure.
+
+Only proceed with startup if the pre-flight passes.
+
+## Self-correction
+
+- If the browser shows a **white screen** or **"Connection Refused"**, check for `.lock` files in `data/pagi_vault/` and `data/pagi_knowledge/`, delete them if present, and restart the sequence.
+- Run `cargo run -p pagi-gateway -- --verify` to confirm locks are cleared.
+
+## Proof of life
+
+- The Agent must describe **one specific UI element** it sees in the browser (e.g. "I see the 'Gateway log stream' header at the bottom" or "I see the chat input placeholder") to prove the page actually rendered.
+- Do **not** mark a task "done" until this proof is provided.

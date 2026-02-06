@@ -1,0 +1,5 @@
+{
+  "name": "PAGI Orchestrator Interface",
+  "description": "A minimalist, dark-mode testing interface for Rust-based AGI orchestrators, featuring thought-process visualization and dynamic backend configuration.",
+  "requestFramePermissions": []
+}
