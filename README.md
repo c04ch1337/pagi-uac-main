@@ -135,8 +135,26 @@ CORS on the gateway allows origins in the Backend (8001–8099) and Frontend (30
 
 ---
 
+## 🚀 Deployment
+
+For a **stable, persistent** bare-metal deployment (environment variables, security hardening, memory locking for Slot 9, and service setup), see the full guide:
+
+- **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)** — Prerequisites, env template (`PAGI_CONFIG`, `PAGI_SHADOW_KEY`, `PAGI_API_KEY`, storage path), Slot 9 (Shadow) memory-locking, execution flow, and systemd/Windows Task or Service examples.
+
+**Quick Start — system integrity check:** After building and starting the gateway, verify the sanctuary with the Sovereign Dashboard:
+
+```bash
+cargo build --release
+# Start gateway (e.g. cargo run -p pagi-gateway --release), then:
+cargo run -p pagi-sovereign-dashboard --release -- status
+# or: ./target/release/pagi status
+```
+
+---
+
 ## Docs
 
 - `docs/BARE_METAL_ARCHITECTURE.md` — Architecture overview.  
+- `docs/DEPLOYMENT.md` — **Bare-metal deployment guide** (env, security, services).  
 - `docs/PROJECT_ANATOMY.md` — Project structure.  
 - `docs/WORKSPACE_HEALTH_REPORT.md` — Post-migration workspace verification.

@@ -75,58 +75,56 @@ export const streamMessageToOrchestrator = async function* (
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-
-    // The backend streams using SSE (`axum::response::sse::Sse`) which frames data as:
-    //   data: <payload>\n\n
-    // This client previously yielded raw chunks, which can look “idle” if the UI
-    // expects plain tokens. Parse SSE frames and yield only the `data:` payload.
-    let buffer = '';
+    const contentType = response.headers.get('content-type') ?? '';
+    const isSSE = contentType.includes('text/event-stream');
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      if (isSSE) {
+        // SSE mode: parse `data: <payload>\n\n` frames.
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() ?? '';
 
-        // Split on newlines; keep last partial line in `buffer`.
-        const lines = buffer.split(/\r?\n/);
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          const trimmed = line.trimEnd();
-          if (!trimmed) continue;
-          if (trimmed.startsWith(':')) {
-            // SSE comment / keepalive
-            continue;
-          }
-          if (trimmed.startsWith('data:')) {
-            const data = trimmed.replace(/^data:\s?/, '');
-
-            // If backend ever sends JSON payloads, try to extract a `content` field.
-            // Otherwise treat `data` as plain text.
-            if (data.startsWith('{') || data.startsWith('[')) {
-              try {
-                const parsed: any = JSON.parse(data);
-                const content =
-                  typeof parsed === 'string'
-                    ? parsed
-                    : (parsed?.content ?? parsed?.token ?? parsed?.text ?? data);
-                yield String(content);
-              } catch {
+          for (const line of lines) {
+            const trimmed = line.trimEnd();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (trimmed.startsWith('data:')) {
+              const data = trimmed.replace(/^data:\s?/, '');
+              if (data.startsWith('{') || data.startsWith('[')) {
+                try {
+                  const parsed: any = JSON.parse(data);
+                  const content =
+                    typeof parsed === 'string'
+                      ? parsed
+                      : (parsed?.content ?? parsed?.token ?? parsed?.text ?? data);
+                  yield String(content);
+                } catch {
+                  yield data;
+                }
+              } else {
                 yield data;
               }
-            } else {
-              yield data;
             }
           }
         }
-      }
-
-      // Flush any remaining buffered line (best-effort)
-      const tail = buffer.trim();
-      if (tail.startsWith('data:')) {
-        yield tail.replace(/^data:\s?/, '');
+        // Flush remaining SSE buffer
+        const tail = (buffer ?? '').trim();
+        if (tail.startsWith('data:')) {
+          yield tail.replace(/^data:\s?/, '');
+        }
+      } else {
+        // Plain-text streaming mode (gateway default: text/plain chunks).
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value, { stream: true });
+          if (chunk) yield chunk;
+        }
       }
     } finally {
       reader.releaseLock();

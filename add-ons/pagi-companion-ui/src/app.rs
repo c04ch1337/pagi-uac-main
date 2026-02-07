@@ -49,5 +49,6 @@ pub fn default_tenant() -> TenantContext {
     TenantContext {
         tenant_id: "pagi-companion-ui".to_string(),
         correlation_id: None,
+        agent_id: None,
     }
 }

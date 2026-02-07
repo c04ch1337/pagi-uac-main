@@ -4,63 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PAGI Orchestrator</title>
-    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
-    <script>
-      tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            fontFamily: {
-              sans: ['Inter', 'sans-serif'],
-            },
-            colors: {
-              zinc: {
-                850: '#1f1f22', 
-                925: '#101013',
-              }
-            }
-          }
-        }
-      }
-    </script>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2309090b'/%3E%3Ctext x='16' y='22' font-size='18' font-family='system-ui,sans-serif' font-weight='600' fill='%23e4e4e7' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E" type="image/svg+xml" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <style>
-      :root {
-        --bg-body: #fafafa;
-        --text-body: #18181b;
-      }
-      .dark {
-        --bg-body: #09090b;
-        --text-body: #e4e4e7;
-      }
-      body {
-        font-family: 'Inter', sans-serif;
-        background-color: var(--bg-body);
-        color: var(--text-body);
-        transition: background-color 0.3s ease, color 0.3s ease;
-      }
-      /* Custom Scrollbar for Webkit */
-      ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #d4d4d8; /* zinc-300 */
-        border-radius: 4px;
-      }
-      .dark ::-webkit-scrollbar-thumb {
-        background: #27272a; /* zinc-800 */
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #a1a1aa; /* zinc-400 */
-      }
-      .dark ::-webkit-scrollbar-thumb:hover {
-        background: #3f3f46; /* zinc-700 */
-      }
-    </style>
   <script type="importmap">
 {
   "imports": {
@@ -76,7 +21,6 @@
   }
 }
 </script>
-<link rel="stylesheet" href="/index.css">
 </head>
   <body>
     <div id="root"></div>

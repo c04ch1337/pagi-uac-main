@@ -14,3 +14,6 @@ scraper = { workspace = true }
 tracing = { workspace = true }
 futures-util = "0.3"
 pagi-core = { path = "../pagi-core" }
+
+[dev-dependencies]
+tempfile = "3"

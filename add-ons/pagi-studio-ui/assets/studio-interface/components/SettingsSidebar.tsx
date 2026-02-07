@@ -395,14 +395,15 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ isOpen, onClose, sett
                             value={settings.llmModel}
                             onChange={(e) => setSettings(prev => ({ ...prev, llmModel: e.target.value }))}
                             className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-300 dark:border-zinc-800 rounded px-3 py-2 text-zinc-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600 focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-all font-mono"
-                            placeholder="e.g. gpt-4o, llama3-70b"
+                            placeholder="e.g. openai/gpt-4o-mini, meta-llama/llama-3.3-70b-instruct:free"
                         />
                         <datalist id="model-suggestions">
-                            <option value="gpt-4o" />
-                            <option value="claude-3-5-sonnet-20240620" />
-                            <option value="llama3-70b-8192" />
-                            <option value="mixtral-8x7b-32768" />
-                            <option value="gemini-1.5-pro" />
+                            <option value="openai/gpt-4o-mini" />
+                            <option value="openai/gpt-4o" />
+                            <option value="anthropic/claude-3.5-sonnet" />
+                            <option value="meta-llama/llama-3.3-70b-instruct:free" />
+                            <option value="google/gemini-2.0-flash-001" />
+                            <option value="mistralai/mistral-7b-instruct" />
                         </datalist>
                         </div>
                     </div>

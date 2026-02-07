@@ -1,4 +1,7 @@
 //! Axum-based API Gateway: entry point for UAC. Config-driven via CoreConfig.
+//! Chat is wired through handlers::chat with Soma+Kardia context injection (Sovereign Brain).
+
+mod handlers;
 
 use axum::{
     body::Body,
@@ -8,7 +11,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use futures_util::stream::StreamExt;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -17,18 +20,23 @@ use tracing::field::Visit;
 use tracing_subscriber::layer::Context;
 use pagi_core::{
     initialize_core_identity, initialize_core_skills, initialize_ethos_policy, AlignmentResult, BlueprintRegistry, CoreConfig, EventRecord, Goal, KbRecord, KbType,
-    KnowledgeStore, MemoryManager, Orchestrator, SkillRegistry, TenantContext,
+    KnowledgeStore, MentalState, MemoryManager, Orchestrator, RelationRecord, ShadowStore, ShadowStoreHandle, SkillRegistry, SovereignState, TenantContext,
 };
 use pagi_skills::{
-    AnalyzeSentiment, CheckAlignment, CommunityPulse, CommunityScraper, DraftResponse, GetAgentMessages, KnowledgeInsert, KnowledgePruner,
-    KnowledgeQuery, LeadCapture, MessageAgent, ModelRouter, RecallPastActions, ResearchAudit, SalesCloser,
-    FsWorkspaceAnalyzer, ResearchEmbedInsert, ResearchSemanticSearch, WriteSandboxFile,
+    BioGateSync, EthosSync, ModelRouter, OikosTaskGovernor, ReflectShadowSkill,
 };
 use std::path::Path as StdPath;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+
+static HEARTBEAT_TICK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+const TRUST_RESOLUTION_REWARD: f32 = 0.05;
+const TRUST_STALE_DECAY_PENALTY: f32 = 0.02;
+const TRUST_STALE_DECAY_TICKS: u64 = 50;
 
 /// Captures the "message" field from a tracing event.
 struct MessageCollector<'a>(&'a mut String);
@@ -97,8 +105,8 @@ fn run_verify() -> Result<(), String> {
     drop(kb);
     println!("OK (all 8 slots accessible)");
 
-    // 3. Check port availability
-    let port = config.port;
+    // 3. Check port availability (Gateway hard-locked to 8001)
+    let port = 8001u16;
     print!("Checking port {}... ", port);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     match std::net::TcpListener::bind(addr) {
@@ -178,63 +186,39 @@ async fn main() {
         Err(e) => tracing::warn!("Failed to bootstrap Ethos policy: {}", e),
     }
 
-    // Cognitive Architecture boot: Pneuma (Vision) active; Oikos (Context) crate count
+    // Cognitive Architecture boot: Pneuma (Vision) active; Oikos (Context) — no workspace_analyzer/sandbox
     let _pneuma_ok = pagi_core::verify_identity(&knowledge).complete;
-    let oikos_slot = pagi_core::KbType::Oikos.slot_id();
-    let crate_count: usize = knowledge
-        .get_record(oikos_slot, "workspace_scan/latest")
-        .ok()
-        .flatten()
-        .and_then(|rec| {
-            serde_json::from_str::<serde_json::Value>(&rec.content).ok()
-                .and_then(|v| v.get("crate_count").and_then(|c| c.as_u64()).map(|n| n as usize))
-        })
-        .unwrap_or(0);
-    if crate_count == 0 {
-        // Run an initial workspace scan so Oikos has context
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let scan = pagi_skills::analyze_workspace(&cwd);
-        let n = scan.get("crate_count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let content = serde_json::to_string(&scan).unwrap_or_else(|_| "{}".to_string());
-        let record = pagi_core::KbRecord::with_metadata(
-            content,
-            serde_json::json!({ "type": "workspace_scan", "skill": "fs_workspace_analyzer", "crate_count": n, "tags": ["oikos", "workspace"] }),
-        );
-        let _ = knowledge.insert_record(oikos_slot, "workspace_scan/latest", &record);
-        tracing::info!(
-            "[Cognitive Architecture] Pneuma (Vision) active. Oikos (Context) mapped to {} crates.",
-            n
-        );
-    } else {
-        tracing::info!(
-            "[Cognitive Architecture] Pneuma (Vision) active. Oikos (Context) mapped to {} crates.",
-            crate_count
-        );
-    }
+    tracing::info!("[Cognitive Architecture] Pneuma (Vision) active. Oikos (Context) ready (Sovereign skills only).");
 
+    let shadow_store: ShadowStoreHandle = if std::env::var("PAGI_SHADOW_KEY").is_ok() {
+        let shadow_path = storage.join("pagi_shadow");
+        match ShadowStore::open_path(&shadow_path) {
+            Ok(store) => {
+                tracing::info!(target: "pagi::gateway", "Secure ShadowStore initialized");
+                Arc::new(tokio::sync::RwLock::new(Some(store)))
+            }
+            Err(e) => {
+                tracing::warn!(target: "pagi::gateway", "ShadowStore open failed: {} (secure journal disabled)", e);
+                Arc::new(tokio::sync::RwLock::new(None))
+            }
+        }
+    } else {
+        Arc::new(tokio::sync::RwLock::new(None))
+    };
+
+    // Sovereign Brain: only ReflectShadow, BioGateSync, OikosTaskGovernor, EthosSync (+ ModelRouter for chat)
     let mut registry = SkillRegistry::new();
-    registry.register(Arc::new(LeadCapture::new(Arc::clone(&memory))));
-    registry.register(Arc::new(KnowledgeQuery::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(KnowledgeInsert::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(CommunityPulse::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(DraftResponse::new(
-        Arc::clone(&memory),
-        Arc::clone(&knowledge),
-    )));
+    let model_router = Arc::new(ModelRouter::with_knowledge(Arc::clone(&knowledge)));
     registry.register(Arc::new(ModelRouter::with_knowledge(Arc::clone(&knowledge))));
-    registry.register(Arc::new(FsWorkspaceAnalyzer::new_with_store(Arc::clone(&knowledge))));
-    registry.register(Arc::new(WriteSandboxFile::new()));
-    registry.register(Arc::new(ResearchEmbedInsert::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(ResearchSemanticSearch::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(ResearchAudit::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(RecallPastActions::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(CheckAlignment::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(AnalyzeSentiment::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(CommunityScraper::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(SalesCloser::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(KnowledgePruner::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(MessageAgent::new(Arc::clone(&knowledge))));
-    registry.register(Arc::new(GetAgentMessages::new(Arc::clone(&knowledge))));
+    registry.register(Arc::new(BioGateSync::new(Arc::clone(&knowledge))));
+    registry.register(Arc::new(EthosSync::new(Arc::clone(&knowledge))));
+    registry.register(Arc::new(OikosTaskGovernor::new(Arc::clone(&knowledge))));
+    registry.register(Arc::new(ReflectShadowSkill::new(
+        Arc::clone(&knowledge),
+        Arc::clone(&shadow_store),
+        Arc::clone(&model_router),
+    )));
+
     let blueprint_path = std::env::var("PAGI_BLUEPRINT_PATH")
         .unwrap_or_else(|_| "config/blueprint.json".to_string());
     let blueprint = Arc::new(BlueprintRegistry::load_json_path(&blueprint_path));
@@ -242,9 +226,6 @@ async fn main() {
         Arc::new(registry),
         Arc::clone(&blueprint),
     ));
-
-    // Create a dedicated ModelRouter instance for streaming support
-    let model_router = Arc::new(ModelRouter::with_knowledge(Arc::clone(&knowledge)));
 
     // Heartbeat (Autonomous Orchestrator): in-process background task so we can share
     // the same Sled-backed KnowledgeStore without cross-process lock contention.
@@ -266,12 +247,15 @@ async fn main() {
         knowledge,
         log_tx,
         model_router,
+        shadow_store: Arc::clone(&shadow_store),
     });
 
-    let port = config.port;
+    // Hard-lock Gateway to port 8001 (Sovereign architecture)
+    const GATEWAY_PORT: u16 = 8001;
+    let port = GATEWAY_PORT;
     let app_name = config.app_name.clone();
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    tracing::info!("{} listening on {}", app_name, addr);
+    tracing::info!("{} listening on {} (port locked)", app_name, addr);
     axum::serve(
         tokio::net::TcpListener::bind(addr).await.unwrap(),
         app,
@@ -303,6 +287,15 @@ async fn heartbeat_tick(
     knowledge: Arc<KnowledgeStore>,
     model_router: Arc<ModelRouter>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Proactive Oikos monitoring: every 10 ticks, scan the physical workspace state
+    // (research_sandbox/) and proactively inject maintenance prompts.
+    let tick_n = HEARTBEAT_TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if tick_n % 10 == 0 {
+        if let Err(e) = maybe_run_oikos_guardian(Arc::clone(&knowledge), tick_n).await {
+            tracing::warn!(target: "pagi::daemon", error = %e, "Oikos guardian scan failed");
+        }
+    }
+
     // Discover active agents by scanning KB_SOMA inbox keys: inbox/{agent_id}/...
     let soma_slot = KbType::Soma.slot_id();
     let keys = knowledge.scan_keys(soma_slot)?;
@@ -340,13 +333,29 @@ async fn heartbeat_tick(
                 continue;
             }
 
-            // Trigger response generation for the agent.
-            let prompt = format!(
+            // Cognitive Governor: effective MentalState (Kardia + Soma/BioGate physical load).
+            let mental = knowledge.get_effective_mental_state(&agent_id);
+            let prompt_base = format!(
                 "You are agent_id={}. You have a new inbox message from {}. Message payload: {}\n\nRespond appropriately.",
                 agent_id,
                 msg.from_agent_id,
                 msg.payload
             );
+            let prompt = if mental.needs_empathetic_tone() {
+                format!(
+                    "{}. {}",
+                    MentalState::EMPATHETIC_SYSTEM_INSTRUCTION,
+                    prompt_base
+                )
+            } else if mental.has_physical_load_adjustment() {
+                format!(
+                    "{}. {}",
+                    MentalState::PHYSICAL_LOAD_SYSTEM_INSTRUCTION,
+                    prompt_base
+                )
+            } else {
+                prompt_base
+            };
 
             let generated = model_router
                 .generate_text_raw(&prompt)
@@ -410,6 +419,328 @@ async fn heartbeat_tick(
     Ok(())
 }
 
+async fn maybe_run_oikos_guardian(
+    _knowledge: Arc<KnowledgeStore>,
+    _tick_n: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Sovereign architecture: no workspace_analyzer/sandbox scan. Oikos tasks are
+    // managed via OikosTaskGovernor skill only.
+    return Ok(());
+    #[allow(unreachable_code)]
+    {
+    let knowledge = _knowledge;
+    let tick_n = _tick_n;
+    let issues = tokio::task::spawn_blocking(|| scan_research_sandbox_for_all_issues())
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {}", e))??;
+
+    // ACTIVE ISSUES TRACKER (persisted in KB_OIKOS)
+    let oikos_slot = KbType::Oikos.slot_id();
+    let active_key = "workspace_guardian/active_maintenance_tasks";
+    let mut active: BTreeMap<String, String> = knowledge
+        .get(oikos_slot, active_key)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| serde_json::from_str::<BTreeMap<String, String>>(&s).ok())
+        .unwrap_or_default();
+
+    // Track when each issue was first observed so we can apply (optional) trust decay for
+    // tasks that remain unresolved for too long.
+    let first_seen_key = "workspace_guardian/active_maintenance_first_seen_tick";
+    let mut first_seen: BTreeMap<String, u64> = knowledge
+        .get(oikos_slot, first_seen_key)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| serde_json::from_str::<BTreeMap<String, u64>>(&s).ok())
+        .unwrap_or_default();
+
+    // Prevent repeated decay penalties for the same issue. (One penalty after crossing threshold.)
+    let decay_applied_key = "workspace_guardian/active_maintenance_decay_applied";
+    let mut decay_applied: BTreeMap<String, bool> = knowledge
+        .get(oikos_slot, decay_applied_key)
+        .ok()
+        .flatten()
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| serde_json::from_str::<BTreeMap<String, bool>>(&s).ok())
+        .unwrap_or_default();
+
+    let mut current: BTreeMap<String, String> = BTreeMap::new();
+    for (issue_key, task) in issues {
+        current.insert(issue_key, task);
+    }
+
+    // 1) RESOLUTION CHECK: previously active issues no longer present.
+    let resolved: Vec<(String, String)> = active
+        .iter()
+        .filter(|(k, _v)| !current.contains_key(*k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (issue_key, task) in resolved {
+        active.remove(&issue_key);
+        first_seen.remove(&issue_key);
+        decay_applied.remove(&issue_key);
+
+        // KARDIA: reward DEV_BOT trust when SAGE_BOT validates the resolution.
+        if let Err(e) = bump_kardia_trust(
+            knowledge.as_ref(),
+            "SAGE_BOT",
+            "DEV_BOT",
+            TRUST_RESOLUTION_REWARD,
+            "Trust increased due to successful maintenance resolution.",
+        ) {
+            tracing::warn!(target: "pagi::daemon", error = %e, "Failed to bump Kardia trust on resolution");
+        }
+
+        // CHRONOS: record resolution.
+        let reflection = EventRecord::now(
+            "Chronos",
+            format!("Task Resolved (Oikos guardian): {}", issue_key),
+        )
+        .with_skill("heartbeat")
+        .with_outcome("proactive_maintenance_resolved");
+        let _ = knowledge.append_chronos_event("SAGE_BOT", &reflection);
+
+        // AUTO-CLEANUP: message DEV_BOT that validation passed.
+        let text = format!(
+            "Validation Passed: the previously detected issue '{}' is no longer present. ({})",
+            issue_key, task
+        );
+        let _ = knowledge.push_agent_message(
+            "SAGE_BOT",
+            "DEV_BOT",
+            &serde_json::json!({
+                "type": "proactive_maintenance_resolved",
+                "source": "oikos_guardian",
+                "issue_key": issue_key,
+                "text": text,
+            }),
+        );
+
+        tracing::info!(
+            target: "pagi::daemon",
+            issue_key = %issue_key,
+            "Oikos guardian: Task Resolved (SAGE_BOT -> DEV_BOT validation message)"
+        );
+    }
+
+    // 2) OPEN NEW ISSUES: issues present now but not in active tracker.
+    for (issue_key, task) in current.iter() {
+        if active.contains_key(issue_key) {
+            continue;
+        }
+        active.insert(issue_key.clone(), task.clone());
+
+        // Record first seen tick (for optional decay logic).
+        first_seen.entry(issue_key.clone()).or_insert(tick_n);
+        decay_applied.entry(issue_key.clone()).or_insert(false);
+
+        // PROACTIVE TRIGGER: SAGE_BOT initiates a maintenance task by messaging DEV_BOT.
+        let text = format!(
+            "I have analyzed the workspace state and identified a maintenance task: {}.",
+            task
+        );
+        let _ = knowledge.push_agent_message(
+            "SAGE_BOT",
+            "DEV_BOT",
+            &serde_json::json!({
+                "type": "proactive_maintenance",
+                "source": "oikos_guardian",
+                "issue_key": issue_key,
+                "task": task,
+                "text": text,
+            }),
+        )?;
+
+        // CHRONOS: record initiation.
+        let reflection = EventRecord::now(
+            "Chronos",
+            format!("Initiated proactive maintenance (Oikos guardian): {}", issue_key),
+        )
+        .with_skill("heartbeat")
+        .with_outcome("proactive_maintenance_initiated");
+        let _ = knowledge.append_chronos_event("SAGE_BOT", &reflection);
+
+        tracing::info!(
+            target: "pagi::daemon",
+            issue_key = %issue_key,
+            "Oikos guardian: initiated proactive maintenance (SAGE_BOT -> DEV_BOT)"
+        );
+    }
+
+    // 3) (Optional) DETERIORATION: if an issue remains active for too long, reduce trust.
+    // This is applied once per issue when it crosses the threshold.
+    for issue_key in active.keys() {
+        let Some(seen_at) = first_seen.get(issue_key).copied() else {
+            continue;
+        };
+        let age = tick_n.saturating_sub(seen_at);
+        if age <= TRUST_STALE_DECAY_TICKS {
+            continue;
+        }
+        if decay_applied.get(issue_key).copied().unwrap_or(false) {
+            continue;
+        }
+
+        if let Err(e) = bump_kardia_trust(
+            knowledge.as_ref(),
+            "SAGE_BOT",
+            "DEV_BOT",
+            -TRUST_STALE_DECAY_PENALTY,
+            "Trust decreased due to unresolved maintenance remaining active beyond 50 ticks.",
+        ) {
+            tracing::warn!(target: "pagi::daemon", error = %e, "Failed to decay Kardia trust for stale maintenance");
+        } else {
+            decay_applied.insert(issue_key.clone(), true);
+        }
+    }
+
+    // Persist active tracker.
+    let bytes = serde_json::to_vec(&active).unwrap_or_else(|_| b"{}".to_vec());
+    knowledge.insert(oikos_slot, active_key, &bytes)?;
+
+    // Persist auxiliary trackers for trust calibration.
+    let first_seen_bytes = serde_json::to_vec(&first_seen).unwrap_or_else(|_| b"{}".to_vec());
+    knowledge.insert(oikos_slot, first_seen_key, &first_seen_bytes)?;
+    let decay_applied_bytes = serde_json::to_vec(&decay_applied).unwrap_or_else(|_| b"{}".to_vec());
+    knowledge.insert(oikos_slot, decay_applied_key, &decay_applied_bytes)?;
+    Ok(())
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Adjust DEV_BOT's trust_score in KB_KARDIA from SAGE_BOT's perspective.
+///
+/// Uses (owner_agent_id, target_id) = ("SAGE_BOT", "DEV_BOT") so SAGE_BOT has a
+/// persistent relation record for DEV_BOT.
+fn bump_kardia_trust(
+    knowledge: &KnowledgeStore,
+    owner_agent_id: &str,
+    target_id: &str,
+    delta: f32,
+    chronos_reflection: &str,
+) -> Result<f32, Box<dyn std::error::Error + Send + Sync>> {
+    let mut rel = knowledge
+        .get_kardia_relation(owner_agent_id, target_id)
+        .unwrap_or_else(|| RelationRecord::new(target_id));
+
+    rel.trust_score = (rel.trust_score + delta).clamp(0.0, 1.0);
+    rel.last_updated_ms = now_ms();
+    knowledge
+        .set_kardia_relation(owner_agent_id, &rel)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
+
+    // CHRONOS LOGGING: write a Kardia-sourced event for observability/audit.
+    let event = EventRecord::now("Kardia", chronos_reflection)
+        .with_skill("heartbeat")
+        .with_outcome("kardia_trust_calibrated");
+    let _ = knowledge.append_chronos_event(owner_agent_id, &event);
+
+    Ok(rel.trust_score)
+}
+
+fn scan_research_sandbox_for_all_issues(
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error + Send + Sync>> {
+    let sandbox_dir = research_sandbox_root();
+    if !sandbox_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    // 1) TODO present in a .rs file (and also allow todo.txt for local verification)
+    // Prioritize TODO detection so an actionable maintenance task is surfaced even
+    // if other hygiene tasks (like README presence) are also pending.
+    let mut issues: Vec<(String, String)> = vec![];
+    let mut stack = vec![sandbox_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for ent in entries.flatten() {
+            let path = ent.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let is_rs = path.extension().and_then(|s| s.to_str()).unwrap_or("") == "rs";
+            let is_todo_txt = file_name.eq_ignore_ascii_case("todo.txt");
+            if !(is_rs || is_todo_txt) {
+                continue;
+            }
+
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.len() > 256 * 1024 {
+                continue;
+            }
+
+            let content = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if let Some(idx) = content.find("TODO") {
+                let rel = path
+                    .strip_prefix(&sandbox_dir)
+                    .ok()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or(file_name)
+                    .replace('\\', "/");
+                let snippet: String = content
+                    .chars()
+                    .skip(idx)
+                    .take(120)
+                    .collect::<String>()
+                    .replace('\n', " ");
+                let issue_key = format!("todo:{}", rel);
+                let task = format!(
+                    "Address TODO marker in research_sandbox/{} (e.g., '{}')",
+                    rel, snippet
+                );
+                issues.push((issue_key, task));
+            }
+        }
+    }
+
+    // 2) Missing README.md in research_sandbox/
+    let readme = sandbox_dir.join("README.md");
+    if !readme.exists() {
+        issues.push((
+            "missing_readme".to_string(),
+            "Create research_sandbox/README.md explaining the sandbox purpose and how to run checks".to_string(),
+        ));
+    }
+
+    issues.sort_by(|a, b| a.0.cmp(&b.0));
+    issues.dedup_by(|a, b| a.0 == b.0);
+    Ok(issues)
+}
+
+fn research_sandbox_root() -> std::path::PathBuf {
+    // Prefer a working-directory-relative path (run from workspace root).
+    // Fall back to `CARGO_MANIFEST_DIR/../..` (workspace root) for safety.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let from_cwd = cwd.join("research_sandbox");
+    if from_cwd.exists() {
+        return from_cwd;
+    }
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("research_sandbox")
+}
+
 fn frontend_root_dir() -> std::path::PathBuf {
     // Prefer a working-directory relative path for local development (run from workspace root).
     // Fall back to workspace-root-relative path from add-ons/pagi-gateway: manifest -> .. -> .. -> pagi-frontend.
@@ -455,6 +786,8 @@ fn build_app(state: AppState) -> Router {
         .route("/api/v1/chat", post(chat))
         .route("/api/v1/kardia/:user_id", get(get_kardia_relation))
         .route("/api/v1/kb-status", get(kb_status))
+        .route("/api/v1/sovereign-status", get(sovereign_status))
+        .route("/v1/vault/read", post(vault_read))
         .with_state(state);
 
     if frontend_enabled {
@@ -484,6 +817,7 @@ pub(crate) struct AppState {
     pub(crate) knowledge: Arc<KnowledgeStore>,
     pub(crate) log_tx: broadcast::Sender<String>,
     pub(crate) model_router: Arc<ModelRouter>,
+    pub(crate) shadow_store: ShadowStoreHandle,
 }
 
 /// GET /api/v1/health – liveness check for UI and scripts.
@@ -503,6 +837,37 @@ async fn kb_status(State(state): State<AppState>) -> axum::Json<serde_json::Valu
         "total_entries": total_entries,
         "knowledge_bases": kb_statuses
     }))
+}
+
+/// GET /api/v1/sovereign-status – full cross-layer state for the Sovereign Dashboard.
+/// When the dashboard cannot open Sled (e.g. gateway holds the lock), it can fetch this endpoint instead.
+/// If PAGI_API_KEY is set, the request must include header `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+async fn sovereign_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<axum::Json<SovereignState>, (StatusCode, &'static str)> {
+    if let Ok(expect_key) = std::env::var("PAGI_API_KEY") {
+        let expect_key = expect_key.trim().to_string();
+        if !expect_key.is_empty() {
+            let provided = headers
+                .get("X-API-Key")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim())
+                .or_else(|| {
+                    headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.strip_prefix("Bearer "))
+                        .map(|s| s.trim())
+                });
+            if provided.as_ref() != Some(&expect_key.as_str()) {
+                return Err((StatusCode::UNAUTHORIZED, "Missing or invalid PAGI_API_KEY"));
+            }
+        }
+    }
+    const AGENT_ID: &str = "default";
+    let sovereign = state.knowledge.get_full_sovereign_state(AGENT_ID);
+    Ok(axum::Json(sovereign))
 }
 
 /// GET /api/v1/logs – Server-Sent Events stream of gateway logs (tracing output).
@@ -532,6 +897,50 @@ async fn logs_stream(
             .interval(Duration::from_secs(15))
             .text("keepalive"),
     )
+}
+
+/// POST /v1/vault/read – decrypt and return a journal entry. Requires X-Pagi-Shadow-Key header (same value as PAGI_SHADOW_KEY).
+#[derive(serde::Deserialize)]
+struct VaultReadRequest {
+    record_id: String,
+}
+
+async fn vault_read(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<VaultReadRequest>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, &'static str)> {
+    const HEADER_KEY: &str = "x-pagi-shadow-key";
+    let client_key = headers
+        .get(HEADER_KEY)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().replace([' ', '\n'], ""));
+    let env_key = std::env::var("PAGI_SHADOW_KEY")
+        .ok()
+        .map(|s| s.trim().replace([' ', '\n'], ""));
+    if client_key.as_ref() != env_key.as_ref() || env_key.is_none() {
+        return Err((StatusCode::FORBIDDEN, "Missing or invalid X-Pagi-Shadow-Key"));
+    }
+    let guard = state.shadow_store.read().await;
+    let store = match guard.as_ref() {
+        Some(s) => s,
+        None => return Err((StatusCode::SERVICE_UNAVAILABLE, "ShadowStore not initialized")),
+    };
+    let decrypted = store
+        .get_journal(&body.record_id)
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Decrypt failed"))?;
+    let entry = match decrypted {
+        Some(e) => e,
+        None => return Err((StatusCode::NOT_FOUND, "Record not found")),
+    };
+    let json = serde_json::json!({
+        "record_id": body.record_id,
+        "label": entry.0.label,
+        "intensity": entry.0.intensity,
+        "timestamp_ms": entry.0.timestamp_ms,
+        "raw_content": entry.0.raw_content,
+    });
+    Ok(axum::Json(json))
 }
 
 /// GET /v1/status – app identity and slot labels from config.
@@ -593,8 +1002,26 @@ async fn execute(
         agent_id: Some(agent_id.to_string()),
     };
 
-    // ETHOS pre-execution check: consult KB_ETHOS before ExecuteSkill
+    // ReflectShadow: require session_key to match PAGI_SHADOW_KEY (vault must be explicitly opened)
     if let Goal::ExecuteSkill { ref name, ref payload } = req.goal {
+        if name == "ReflectShadow" {
+            let client_key = payload
+                .as_ref()
+                .and_then(|p| p.get("session_key"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().replace([' ', '\n'], ""));
+            let env_key = std::env::var("PAGI_SHADOW_KEY")
+                .ok()
+                .map(|s| s.trim().replace([' ', '\n'], ""));
+            if client_key.as_ref() != env_key.as_ref() || env_key.is_none() {
+                return axum::Json(serde_json::json!({
+                    "status": "error",
+                    "error": "ReflectShadow requires valid session_key (X-Pagi-Shadow-Key / PAGI_SHADOW_KEY)"
+                }));
+            }
+        }
+
+        // ETHOS pre-execution check: consult KB_ETHOS before ExecuteSkill
         let content_to_scan = payload
             .as_ref()
             .map(|p| {
@@ -723,7 +1150,8 @@ async fn chat(
     }
 }
 
-/// Non-streaming chat handler - returns JSON response
+/// Non-streaming chat handler - returns JSON response.
+/// Uses handlers::chat to inject Soma + Kardia context, then Orchestrator::dispatch(ModelRouter).
 async fn chat_json(
     state: AppState,
     req: ChatRequest,
@@ -736,19 +1164,14 @@ async fn chat_json(
         agent_id: Some(agent_id.to_string()),
     };
 
-    // Adaptive response: inject KB_KARDIA relation context so the LLM can adjust tone
-    let kardia_context = state
-        .knowledge
-        .get_kardia_relation(agent_id, user_id)
-        .map(|r| r.prompt_context())
-        .unwrap_or_default();
-    let prompt_with_context = if kardia_context.is_empty() {
-        req.prompt.clone()
-    } else {
-        format!("{}{}", kardia_context, req.prompt)
-    };
+    let prompt_with_context = handlers::chat::build_prompt_with_soma_kardia(
+        &state.knowledge,
+        agent_id,
+        user_id,
+        &req.prompt,
+    );
 
-    // Use ExecuteSkill goal to run ModelRouter with the prompt
+    // Orchestrator::dispatch with ModelRouter (Sovereign Brain connected)
     let goal = Goal::ExecuteSkill {
         name: "ModelRouter".to_string(),
         payload: Some(serde_json::json!({
@@ -793,7 +1216,8 @@ async fn chat_json(
     }
 }
 
-/// Streaming chat handler - returns SSE stream of tokens
+/// Streaming chat handler - returns plain-text stream of tokens.
+/// Uses handlers::chat to inject Soma + Kardia context (Sovereign Brain), then ModelRouter.
 async fn chat_streaming(
     state: AppState,
     req: ChatRequest,
@@ -802,16 +1226,12 @@ async fn chat_streaming(
     
     let user_id = req.user_alias.as_deref().unwrap_or("studio-user");
     let agent_id = req.agent_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(pagi_core::DEFAULT_AGENT_ID);
-    let kardia_context = state
-        .knowledge
-        .get_kardia_relation(agent_id, user_id)
-        .map(|r| r.prompt_context())
-        .unwrap_or_default();
-    let prompt = if kardia_context.is_empty() {
-        req.prompt.clone()
-    } else {
-        format!("{}{}", kardia_context, req.prompt)
-    };
+    let prompt = handlers::chat::build_prompt_with_soma_kardia(
+        &state.knowledge,
+        agent_id,
+        user_id,
+        &req.prompt,
+    );
 
     let model = req.model.clone();
     let temperature = req.temperature;
@@ -962,6 +1382,7 @@ async fn get_research_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pagi_core::PolicyRecord;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
@@ -973,6 +1394,10 @@ mod tests {
 
     fn test_model_router() -> Arc<ModelRouter> {
         Arc::new(ModelRouter::new())
+    }
+
+    fn test_shadow_store() -> ShadowStoreHandle {
+        Arc::new(tokio::sync::RwLock::new(None))
     }
 
     fn test_config() -> CoreConfig {
@@ -1015,6 +1440,7 @@ mod tests {
                 knowledge,
                 log_tx: test_log_tx(),
                 model_router: test_model_router(),
+                shadow_store: test_shadow_store(),
             });
         let req = Request::builder()
             .method("GET")
@@ -1049,6 +1475,7 @@ mod tests {
                 knowledge,
                 log_tx: test_log_tx(),
                 model_router: test_model_router(),
+                shadow_store: test_shadow_store(),
             });
 
         let body = serde_json::json!({
@@ -1098,6 +1525,7 @@ mod tests {
             knowledge: Arc::clone(&knowledge),
             log_tx: test_log_tx(),
             model_router: Arc::new(ModelRouter::with_knowledge(Arc::clone(&knowledge))),
+            shadow_store: test_shadow_store(),
         });
 
         let req = Request::builder()
@@ -1140,6 +1568,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let body = serde_json::json!({
@@ -1185,6 +1614,7 @@ mod tests {
                 knowledge: Arc::clone(&knowledge),
                 log_tx: test_log_tx(),
                 model_router: test_model_router(),
+                shadow_store: test_shadow_store(),
             });
 
         let query_body = serde_json::json!({
@@ -1251,6 +1681,7 @@ mod tests {
                 knowledge: Arc::clone(&knowledge),
                 log_tx: test_log_tx(),
                 model_router: test_model_router(),
+                shadow_store: test_shadow_store(),
             });
 
         let write_body = serde_json::json!({
@@ -1332,6 +1763,7 @@ mod tests {
                 knowledge: Arc::clone(&knowledge),
                 log_tx: test_log_tx(),
                 model_router: Arc::new(ModelRouter::with_knowledge(Arc::clone(&knowledge))),
+                shadow_store: test_shadow_store(),
             });
 
         let sentiment_body = serde_json::json!({
@@ -1413,6 +1845,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let insert_body = serde_json::json!({
@@ -1496,6 +1929,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         // 1. Capture a lead to get lead_id (IngestData)
@@ -1594,6 +2028,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         // 1. Capture a lead (IngestData)
@@ -1675,6 +2110,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         // 1. Capture a lead (IngestData)
@@ -1776,6 +2212,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let mock_html = r#"<!DOCTYPE html>
@@ -1857,6 +2294,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let mock_html = r#"<html><body><h1>Fall Festival Next Week</h1></body></html>"#;
@@ -1915,6 +2353,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let lead_body = serde_json::json!({
@@ -1991,6 +2430,7 @@ mod tests {
             knowledge,
             log_tx: test_log_tx(),
             model_router: test_model_router(),
+            shadow_store: test_shadow_store(),
         });
 
         let body = serde_json::json!({
@@ -2064,6 +2504,7 @@ mod tests {
                 knowledge: Arc::clone(&knowledge),
                 log_tx: test_log_tx(),
                 model_router: test_model_router(),
+                shadow_store: test_shadow_store(),
             });
 
         let prune_body = serde_json::json!({

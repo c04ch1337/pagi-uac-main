@@ -11,7 +11,7 @@ use pagi_core::{ControlPanelMessage, Goal, TenantContext};
 use pagi_studio_ui::build_studio_stack;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 const PORT: u16 = 3001;
 
@@ -25,7 +25,24 @@ struct AppState {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let storage = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let storage = storage.join("data");
-    let (stack, ctx) = build_studio_stack(&storage).expect("build studio stack");
+    let (stack, ctx) = match build_studio_stack(&storage) {
+        Ok(ok) => ok,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("lock") || msg.contains("locked") || msg.contains("access the file") {
+                eprintln!("PAGI Studio UI server: cannot open database (already in use).");
+                eprintln!("  Storage path: {}", storage.display());
+                eprintln!();
+                eprintln!("  If pagi-gateway is running, it holds the lock on data/pagi_vault and data/pagi_knowledge.");
+                eprintln!("  Either:");
+                eprintln!("    1. Stop the gateway, then run this server again (standalone mode), or");
+                eprintln!("    2. Use the Vite dev server for the UI instead: npm run dev in add-ons/pagi-studio-ui/assets/studio-interface");
+                eprintln!("       and keep the gateway on 8001 for the API.");
+                std::process::exit(101);
+            }
+            return Err(e.into());
+        }
+    };
     let stack = Arc::new(stack);
     let state = AppState {
         stack: Arc::clone(&stack),
@@ -36,15 +53,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .join("..")
         .join("assets")
         .join("studio-interface");
-    let dist_dir = static_dir.join("dist");
-    let serve_path = if dist_dir.exists() { dist_dir } else { static_dir };
-
-    let serve_dir = ServeDir::new(serve_path).append_index_html_on_directories(true);
+    // When run from workspace root, compile-time path may not exist; use cwd-relative path.
+    let serve_path = if static_dir.exists() {
+        let dist_dir = static_dir.join("dist");
+        if dist_dir.exists() { dist_dir } else { static_dir }
+    } else {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let from_cwd = cwd.join("add-ons").join("pagi-studio-ui").join("assets").join("studio-interface");
+        let dist_from_cwd = from_cwd.join("dist");
+        if dist_from_cwd.exists() {
+            dist_from_cwd
+        } else if from_cwd.exists() {
+            from_cwd
+        } else {
+            static_dir
+        }
+    };
+    let serve_dir = ServeDir::new(serve_path.clone()).append_index_html_on_directories(true);
+    let index_css = serve_path.join("index.css");
+    let index_tsx = serve_path.join("index.tsx");
     let app = Router::new()
         .route("/api/v1/execute", post(api_execute))
         .route("/api/v1/chat", post(api_chat))
         .route("/api/v1/control", post(api_control))
         .route("/api/v1/status", get(api_status))
+        .route_service("/index.css", ServeFile::new(index_css))
+        .route_service("/index.tsx", ServeFile::new(index_tsx))
         .with_state(state)
         .fallback_service(serve_dir);
 

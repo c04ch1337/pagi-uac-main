@@ -259,6 +259,79 @@ impl ModelRouter {
         Ok((generated, chat_response.usage))
     }
 
+    /// **Reflection path:** generates a supportive reframing from the LLM.
+    /// - Prompt is used as-is (no skills appendix). Content is never logged.
+    /// - Used by ReflectShadowSkill for vault content; ensures volatile memory only.
+    pub async fn generate_reflection(
+        &self,
+        prompt: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        match self.mode {
+            LlmMode::Mock => {
+                // Ethos-aware mock: if a philosophical policy is set, reflect its school.
+                if let Some(store) = &self.knowledge {
+                    if let Some(phil) = store.get_ethos_philosophical_policy() {
+                        let school = &phil.active_school;
+                        return Ok(format!(
+                            "Here is a gentle reframe using {} principles: What you're feeling makes sense. \
+                             Focus on what is within your control — your own reaction and choices — \
+                             rather than the other person's behavior. You have agency in how you hold this experience.",
+                            school,
+                        ));
+                    }
+                }
+                // Fallback: generic supportive reframing without logging prompt content.
+                Ok(
+                    "Here is a gentle reframe: What you're feeling makes sense. \
+                     Consider viewing this as a moment to pause and choose your response \
+                     rather than react. You have agency in how you hold this experience."
+                        .to_string(),
+                )
+            }
+            LlmMode::Live => {
+                let url = std::env::var(ENV_LLM_API_URL).unwrap_or_else(|_| DEFAULT_API_URL.to_string());
+                let key = std::env::var(ENV_LLM_API_KEY)?;
+                let model = std::env::var(ENV_LLM_MODEL).unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+                tracing::debug!(
+                    target: "pagi::model_router",
+                    len = prompt.len(),
+                    "[ModelRouter] Reflection request (prompt length only; content not logged)"
+                );
+                let request_body = ChatRequest {
+                    model: model.clone(),
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: prompt.to_string(),
+                    }],
+                    temperature: Some(0.5),
+                    max_tokens: Some(1024),
+                    stream: None,
+                };
+                let response = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", key))
+                    .header("HTTP-Referer", "https://pagi-orchestrator.local")
+                    .header("X-Title", "PAGI-Reflection")
+                    .header("Content-Type", "application/json")
+                    .json(&request_body)
+                    .send()
+                    .await?;
+                if !response.status().is_success() {
+                    let err = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+                    return Err(format!("Reflection LLM error: {}", err).into());
+                }
+                let chat_response: ChatResponse = response.json().await?;
+                let text = chat_response
+                    .choices
+                    .first()
+                    .map(|c| c.message.content.trim().to_string())
+                    .unwrap_or_else(|| String::new());
+                Ok(text)
+            }
+        }
+    }
+
     /// Generates text from the LLM using the given prompt as-is (no skills appendix).
     /// Used by the Thalamus/cognitive router for classification tasks.
     pub async fn generate_text_raw(

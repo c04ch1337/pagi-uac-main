@@ -13,6 +13,9 @@ const App: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false);
   
   // Initialize settings from localStorage if available
+  // Sovereign architecture: Gateway is hard-locked to port 8001. UI must point only to 8001.
+  const GATEWAY_API_URL = 'http://127.0.0.1:8001/api/v1/chat';
+
   const [settings, setSettings] = useState<AppSettings>(() => {
     const savedSettings = localStorage.getItem('agi_settings');
     if (savedSettings) {
@@ -23,23 +26,28 @@ const App: React.FC = () => {
         // Ensure userAlias exists for migration
         if (!parsed.userAlias) parsed.userAlias = 'User';
         // Ensure LLM settings exist for migration
-        if (!parsed.llmModel) parsed.llmModel = 'llama3-70b-8192';
+        if (!parsed.llmModel) parsed.llmModel = 'openai/gpt-4o-mini';
+        // Migration: replace invalid OpenRouter model IDs (old UI used llama3-70b-8192 which is not valid).
+        if (parsed.llmModel === 'llama3-70b-8192') parsed.llmModel = 'meta-llama/llama-3.3-70b-instruct:free';
         if (parsed.llmTemperature === undefined) parsed.llmTemperature = 0.7;
         if (!parsed.llmMaxTokens) parsed.llmMaxTokens = 8192;
         if (!parsed.orchestratorPersona) parsed.orchestratorPersona = 'general_assistant';
-        
+
+        // Enforce port 8001 only (any other host/port is overwritten)
+        parsed.apiUrl = GATEWAY_API_URL;
+
         return parsed;
       } catch (e) {
         console.error("Failed to parse settings", e);
       }
     }
     return {
-      apiUrl: 'http://127.0.0.1:8001/api/v1/chat', // Direct to Gateway (8001). Use 3001 only if running pagi-studio-ui-server.
+      apiUrl: GATEWAY_API_URL,
       stream: true,
       showThoughts: true,
       userAlias: 'User',
       theme: 'dark',
-      llmModel: 'llama3-70b-8192',
+      llmModel: 'openai/gpt-4o-mini',
       llmTemperature: 0.7,
       llmMaxTokens: 8192,
       orchestratorPersona: 'general_assistant',

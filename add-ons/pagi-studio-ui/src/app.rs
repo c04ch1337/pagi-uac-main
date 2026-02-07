@@ -62,6 +62,7 @@ pub fn build_studio_stack(
     let ctx = TenantContext {
         tenant_id: "pagi-studio-ui".to_string(),
         correlation_id: None,
+        agent_id: None,
     };
 
     Ok((
