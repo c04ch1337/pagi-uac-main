@@ -30,7 +30,7 @@ npm install
 npm run dev
 ```
 
-Then open the URL shown (e.g. http://localhost:3001). Set the API URL in Settings (gear icon) to your backend (e.g. http://127.0.0.1:8001 or http://127.0.0.1:3001/api/v1/chat).
+Then open the URL shown (e.g. http://localhost:3001). The UI is hardcoded to the Gateway at http://127.0.0.1:8001/api/v1 (no 3001 API).
 
 ## Assets
 

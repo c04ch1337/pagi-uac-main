@@ -26,8 +26,8 @@ const App: React.FC = () => {
         // Ensure userAlias exists for migration
         if (!parsed.userAlias) parsed.userAlias = 'User';
         // Ensure LLM settings exist for migration
-        if (!parsed.llmModel) parsed.llmModel = 'openai/gpt-4o-mini';
-        // Migration: replace invalid OpenRouter model IDs (old UI used llama3-70b-8192 which is not valid).
+        if (!parsed.llmModel) parsed.llmModel = 'deepseek/deepseek-v3.2';
+        // Migration: replace invalid OpenRouter model IDs.
         if (parsed.llmModel === 'llama3-70b-8192') parsed.llmModel = 'meta-llama/llama-3.3-70b-instruct:free';
         if (parsed.llmTemperature === undefined) parsed.llmTemperature = 0.7;
         if (!parsed.llmMaxTokens) parsed.llmMaxTokens = 8192;
@@ -47,7 +47,7 @@ const App: React.FC = () => {
       showThoughts: true,
       userAlias: 'User',
       theme: 'dark',
-      llmModel: 'openai/gpt-4o-mini',
+      llmModel: 'deepseek/deepseek-v3.2',
       llmTemperature: 0.7,
       llmMaxTokens: 8192,
       orchestratorPersona: 'general_assistant',
@@ -57,7 +57,8 @@ const App: React.FC = () => {
   // Save settings to localStorage whenever they change
   useEffect(() => {
     try {
-      localStorage.setItem('agi_settings', JSON.stringify(settings));
+      const toSave = { ...settings, apiUrl: GATEWAY_API_URL };
+      localStorage.setItem('agi_settings', JSON.stringify(toSave));
     } catch (e) {
       console.error("Failed to save settings to localStorage", e);
     }
@@ -233,7 +234,7 @@ const App: React.FC = () => {
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'agi',
-        content: `Connection Error: Failed to reach ${settings.apiUrl}. Ensure your Rust backend is running.`,
+        content: `Connection Error: Failed to reach http://127.0.0.1:8001/api/v1/chat. Ensure the Gateway is running.`,
         isError: true,
         timestamp: Date.now(),
       };

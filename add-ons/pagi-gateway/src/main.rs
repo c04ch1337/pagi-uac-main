@@ -250,7 +250,7 @@ async fn main() {
         shadow_store: Arc::clone(&shadow_store),
     });
 
-    // Hard-lock Gateway to port 8001 (Sovereign architecture)
+    // PORT LOCKOUT: Hard-bind to 127.0.0.1:8001 only (Sovereign architecture). No 0.0.0.0.
     const GATEWAY_PORT: u16 = 8001;
     let port = GATEWAY_PORT;
     let app_name = config.app_name.clone();
@@ -759,19 +759,19 @@ fn frontend_root_dir() -> std::path::PathBuf {
 fn build_app(state: AppState) -> Router {
     let frontend_enabled = state.config.frontend_enabled;
 
-    // CORS: allow Backend/API (8001-8099) and Frontend/UI (3001-3099) port ranges.
-    // NOTE: SSE streaming often triggers additional browser-managed headers
-    // (e.g., Accept, Cache-Control, Pragma). If we only allow CONTENT_TYPE,
-    // fetch() may fail before the request reaches the handler.
+    // CORS: allow UI origins so the "brain" is reachable. No mock; UI must talk to this gateway only.
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &axum::http::HeaderValue, _| {
             let s = origin.to_str().unwrap_or("");
+            // Explicit localhost UI ports (Vite often 3000 or 3001)
+            if s == "http://localhost:3000" || s == "http://127.0.0.1:3000" { return true; }
+            if s == "http://localhost:3001" || s == "http://127.0.0.1:3001" { return true; }
             let port = s
                 .split(':')
                 .last()
                 .and_then(|p| p.parse::<u16>().ok())
                 .unwrap_or(0);
-            (3001..=3099).contains(&port) || (8001..=8099).contains(&port)
+            (3000..=3099).contains(&port) || (8001..=8099).contains(&port)
         }))
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::PUT, Method::DELETE])
         .allow_headers(tower_http::cors::Any)
@@ -820,9 +820,13 @@ pub(crate) struct AppState {
     pub(crate) shadow_store: ShadowStoreHandle,
 }
 
-/// GET /api/v1/health – liveness check for UI and scripts.
+/// GET /api/v1/health – liveness check. Returns Sovereign identity so UI can verify it is not talking to a Sandbox.
 async fn health() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "status": "ok" }))
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "identity": "Sovereign",
+        "message": "PAGI Gateway (Master Orchestrator). Not a Sandbox or mock."
+    }))
 }
 
 /// GET /api/v1/kb-status – returns status of all 8 Knowledge Bases (L2 Memory).
@@ -1133,8 +1137,9 @@ fn chronos_event_from_goal_and_result(goal: &Goal, result: &serde_json::Value) -
     Some(event)
 }
 
-/// Chat endpoint for the Studio UI - routes prompt through ModelRouter skill
-/// Supports both streaming (SSE) and non-streaming (JSON) modes.
+/// Chat endpoint: Orchestrator verification — uses the actual Orchestrator and KnowledgeStore
+/// from pagi-core (AppState). No demo, no sandbox. state.orchestrator.dispatch(ModelRouter)
+/// and state.knowledge.build_system_directive() are the only path. Supports streaming and JSON.
 async fn chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
@@ -1151,7 +1156,7 @@ async fn chat(
 }
 
 /// Non-streaming chat handler - returns JSON response.
-/// Uses handlers::chat to inject Soma + Kardia context, then Orchestrator::dispatch(ModelRouter).
+/// Builds Sovereign system directive (Identity/Soma/Kardia/Ethos/Oikos) and sends only user prompt to ModelRouter.
 async fn chat_json(
     state: AppState,
     req: ChatRequest,
@@ -1164,18 +1169,15 @@ async fn chat_json(
         agent_id: Some(agent_id.to_string()),
     };
 
-    let prompt_with_context = handlers::chat::build_prompt_with_soma_kardia(
-        &state.knowledge,
-        agent_id,
-        user_id,
-        &req.prompt,
-    );
+    // Sovereign: dynamic system prompt from KnowledgeStore (no generic sandbox/research-assistant)
+    let system_directive = state.knowledge.build_system_directive(agent_id, user_id);
 
-    // Orchestrator::dispatch with ModelRouter (Sovereign Brain connected)
+    // Orchestrator::dispatch with ModelRouter — system_prompt + raw user prompt
     let goal = Goal::ExecuteSkill {
         name: "ModelRouter".to_string(),
         payload: Some(serde_json::json!({
-            "prompt": prompt_with_context,
+            "prompt": req.prompt,
+            "system_prompt": system_directive,
             "model": req.model,
             "temperature": req.temperature,
             "max_tokens": req.max_tokens,
@@ -1217,7 +1219,7 @@ async fn chat_json(
 }
 
 /// Streaming chat handler - returns plain-text stream of tokens.
-/// Uses handlers::chat to inject Soma + Kardia context (Sovereign Brain), then ModelRouter.
+/// Builds Sovereign system directive and sends [system, user] to ModelRouter (no sandbox prompt).
 async fn chat_streaming(
     state: AppState,
     req: ChatRequest,
@@ -1226,12 +1228,7 @@ async fn chat_streaming(
     
     let user_id = req.user_alias.as_deref().unwrap_or("studio-user");
     let agent_id = req.agent_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(pagi_core::DEFAULT_AGENT_ID);
-    let prompt = handlers::chat::build_prompt_with_soma_kardia(
-        &state.knowledge,
-        agent_id,
-        user_id,
-        &req.prompt,
-    );
+    let system_directive = state.knowledge.build_system_directive(agent_id, user_id);
 
     let model = req.model.clone();
     let temperature = req.temperature;
@@ -1241,8 +1238,9 @@ async fn chat_streaming(
     tracing::info!(
         target: "pagi::chat",
         agent_id = %agent_id,
-        "[Chat] Starting streaming session for prompt ({} chars)",
-        prompt.len()
+        "[Chat] Starting streaming session for prompt ({} chars), system directive ({} chars)",
+        req.prompt.len(),
+        system_directive.len()
     );
     
     // Check if we're in mock mode
@@ -1252,9 +1250,10 @@ async fn chat_streaming(
         let mut accumulated_response = String::new();
         
         if is_live {
-            // Live streaming from OpenRouter
+            // Live streaming from OpenRouter — [system (Mission Directive), user]
             match state.model_router.stream_generate(
-                &prompt,
+                Some(&system_directive),
+                &req.prompt,
                 model.as_deref(),
                 temperature,
                 max_tokens,
@@ -1276,7 +1275,7 @@ async fn chat_streaming(
             }
         } else {
             // Mock streaming - word by word with delays
-            let mut rx = state.model_router.mock_stream_generate(&prompt);
+            let mut rx = state.model_router.mock_stream_generate(&req.prompt);
             while let Some(chunk) = rx.recv().await {
                 accumulated_response.push_str(&chunk);
                 yield chunk;

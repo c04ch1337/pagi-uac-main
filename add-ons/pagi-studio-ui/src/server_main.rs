@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use pagi_core::{ControlPanelMessage, Goal, TenantContext};
+use pagi_core::{ControlPanelMessage, TenantContext};
 use pagi_studio_ui::build_studio_stack;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 eprintln!("       and keep the gateway on 8001 for the API.");
                 std::process::exit(101);
             }
-            return Err(e.into());
+            return Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()).into());
         }
     };
     let stack = Arc::new(stack);
@@ -72,9 +72,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let serve_dir = ServeDir::new(serve_path.clone()).append_index_html_on_directories(true);
     let index_css = serve_path.join("index.css");
     let index_tsx = serve_path.join("index.tsx");
+    // Environment alignment: Chat and execute are served ONLY by the Gateway (127.0.0.1:8001).
+    // This server must NOT serve /api/v1/chat or /api/v1/execute — they are mocked here and would return wrong responses.
     let app = Router::new()
-        .route("/api/v1/execute", post(api_execute))
-        .route("/api/v1/chat", post(api_chat))
+        // .route("/api/v1/execute", post(api_execute))  // DISABLED: use Gateway at 8001
+        // .route("/api/v1/chat", post(api_chat))       // DISABLED: use Gateway at 8001
         .route("/api/v1/control", post(api_control))
         .route("/api/v1/status", get(api_status))
         .route_service("/index.css", ServeFile::new(index_css))
@@ -85,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], PORT));
     let url = format!("http://{}", addr);
     println!("PAGI Studio UI server: {}", url);
-    println!("Open in browser for Google Studio style interface. API: /api/v1/execute, /api/v1/chat, /api/v1/control");
+    println!("Chat/execute: use Gateway at http://127.0.0.1:8001. This server: control, status, static UI only.");
     if let Ok(()) = webbrowser::open(&url) {}
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -100,62 +102,7 @@ async fn api_status(State(state): State<AppState>) -> Json<serde_json::Value> {
     }))
 }
 
-async fn api_execute(
-    State(state): State<AppState>,
-    Json(goal): Json<Goal>,
-) -> Json<serde_json::Value> {
-    let result = state
-        .stack
-        .orchestrator
-        .dispatch(&state.ctx, goal)
-        .await;
-    match result {
-        Ok(v) => Json(v),
-        Err(e) => Json(serde_json::json!({
-            "status": "error",
-            "message": e.to_string()
-        })),
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct ChatRequest {
-    prompt: String,
-}
-
-async fn api_chat(
-    State(state): State<AppState>,
-    Json(req): Json<ChatRequest>,
-) -> Json<serde_json::Value> {
-    let query = req.prompt.trim();
-    let query = if query.is_empty() {
-        "brand_voice".to_string()
-    } else {
-        query.to_string()
-    };
-    let goal = Goal::QueryKnowledge {
-        slot_id: 1,
-        query: query.clone(),
-    };
-    let result = state.stack.orchestrator.dispatch(&state.ctx, goal).await;
-    match result {
-        Ok(v) => {
-            let response = v
-                .get("value")
-                .and_then(|x| x.as_str())
-                .unwrap_or_else(|| v.get("status").and_then(|x| x.as_str()).unwrap_or(""))
-                .to_string();
-            Json(serde_json::json!({
-                "response": response,
-                "thoughts": []
-            }))
-        }
-        Err(e) => Json(serde_json::json!({
-            "response": format!("Error: {}", e),
-            "thoughts": []
-        })),
-    }
-}
+// api_execute and api_chat REMOVED — do not serve on port 3001. Use Gateway at http://127.0.0.1:8001.
 
 async fn api_control(
     State(state): State<AppState>,

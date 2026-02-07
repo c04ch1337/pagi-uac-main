@@ -1,15 +1,25 @@
 import { ApiResponse, AppSettings } from '../types';
+import { GATEWAY_CHAT_URL } from '../src/api/config';
+
+function chatHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    const key = (import.meta as unknown as { env?: { VITE_PAGI_API_KEY?: string } }).env?.VITE_PAGI_API_KEY;
+    if (key && String(key).trim()) headers['X-API-Key'] = String(key).trim();
+  } catch {
+    // no env (e.g. test runner)
+  }
+  return headers;
+}
 
 export const sendMessageToOrchestrator = async (
   prompt: string, 
   settings: AppSettings
 ): Promise<ApiResponse> => {
   try {
-    const response = await fetch(settings.apiUrl, {
+    const response = await fetch(GATEWAY_CHAT_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: chatHeaders(),
       body: JSON.stringify({
         prompt,
         stream: settings.stream,
@@ -49,11 +59,9 @@ export const streamMessageToOrchestrator = async function* (
   settings: AppSettings
 ): AsyncGenerator<string, void, unknown> {
   try {
-    const response = await fetch(settings.apiUrl, {
+    const response = await fetch(GATEWAY_CHAT_URL, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: chatHeaders(),
       body: JSON.stringify({
         prompt,
         stream: true,

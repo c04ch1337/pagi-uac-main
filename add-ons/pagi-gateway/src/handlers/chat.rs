@@ -1,16 +1,17 @@
-//! Chat handler: reconnects the Sovereign Brain by injecting Soma and Kardia state
-//! from KnowledgeStore into every chat request. The gateway uses this context so the
-//! agent responds with full awareness of the user's body (BioGate/Soma) and
-//! relationship/mental state (Kardia).
+//! Chat handler: Sovereign Brain context for chat.
 //!
-//! Non-streaming chat calls `Orchestrator::dispatch` with `Goal::ExecuteSkill { name: "ModelRouter", ... }`.
-//! Streaming chat uses the same context but calls `ModelRouter` directly for token stream.
+//! The **system prompt** (Mission Directive) is built by `KnowledgeStore::build_system_directive`
+//! in pagi-core and sent as a dedicated `role: "system"` message from the Gateway — never
+//! from the UI. That ensures the LLM receives Identity (Pneuma), Soma, Kardia, Ethos, Oikos, and Shadow.
+//!
+//! Non-streaming: `Orchestrator::dispatch(ModelRouter)` with `system_prompt` + `prompt`.
+//! Streaming: `ModelRouter::stream_generate(Some(system_directive), user_prompt, ...)`.
 
 use pagi_core::{KnowledgeStore, MentalState};
 
-/// Builds the full prompt for the LLM by injecting current Soma (body/BioGate) and
-/// Kardia (relationship/mental) state from KnowledgeStore. Every chat request must
-/// call this so the agent has the user's actual status.
+/// Optional: builds a single prompt string with Soma/Kardia prefix (for flows that do not use
+/// a separate system message). The main chat path uses `KnowledgeStore::build_system_directive` instead.
+#[allow(dead_code)]
 pub fn build_prompt_with_soma_kardia(
     knowledge: &KnowledgeStore,
     agent_id: &str,

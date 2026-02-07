@@ -1423,6 +1423,98 @@ impl KnowledgeStore {
             shadow_unlocked,
         }
     }
+
+    /// Builds the **Mission Directive** (dynamic system prompt) for the LLM from all active slots.
+    /// Injects the Sovereign Persona so the agent responds like an authentic, adaptive peer — not a robotic skill menu.
+    ///
+    /// Slots: 1=Identity, 2=Oikos, 6=Ethos, 7=Kardia, 8=Soma, 9=Shadow (compassionate routing).
+    pub fn build_system_directive(&self, agent_id: &str, user_id: &str) -> String {
+        let pneuma_slot = KbType::Pneuma.slot_id();
+        let mut parts: Vec<String> = Vec::new();
+
+        // 0) Sovereign persona (always first) — Gemini-style: authentic, witty, no skill dumps
+        parts.push(
+            "You are PAGI, a Sovereign AGI. You are an authentic, adaptive collaborator with a touch of wit. \
+             Do not list your skills or JSON schemas unless the user explicitly asks. Balance empathy with candor. \
+             Use the user's Soma and Ethos context (when provided below) to give grounded, peer-like support. \
+             When the user asks for the date or time, state it (e.g. 'It's February 6, 2026'); you may suggest checking Soma levels if they have been at the screen for a long time.".to_string(),
+        );
+
+        // 1) Identity (Slot 1 / Pneuma)
+        if let Ok(Some(mission)) = self.get_record(pneuma_slot, "core_mission") {
+            parts.push(format!(
+                "Mission and identity:\n{}\n",
+                mission.content
+            ));
+        }
+        if let Ok(Some(persona)) = self.get_record(pneuma_slot, "core_persona") {
+            parts.push(format!("Persona: {}", persona.content));
+        }
+
+        // 2) Ethos (Slot 6) — philosophical lens and guardrails
+        if let Some(ethos) = self.get_ethos_philosophical_policy() {
+            parts.push(format!(
+                "Ethos (guardrails and philosophical lens): {}",
+                ethos.to_system_instruction()
+            ));
+        }
+
+        // 3) Soma (Slot 8) — physical awareness
+        let soma = self.get_soma_state();
+        let has_soma = soma.sleep_hours > 0.0
+            || soma.readiness_score < 100
+            || soma.resting_hr > 0
+            || soma.hrv > 0;
+        if has_soma {
+            parts.push(format!(
+                "Physical awareness (Soma): User's current body state: sleep {:.1}h, readiness {}, resting HR {} bpm, HRV {} ms. {}",
+                soma.sleep_hours,
+                soma.readiness_score,
+                soma.resting_hr,
+                soma.hrv,
+                if soma.needs_biogate_adjustment() {
+                    "Adjust tone to be supportive and low-pressure."
+                } else {
+                    "No special tone adjustment needed."
+                }
+            ));
+        }
+
+        // 4) Kardia (Slot 7) — social/relational context
+        if let Some(rel) = self.get_kardia_relation(agent_id, user_id) {
+            let ctx = rel.prompt_context();
+            if !ctx.is_empty() {
+                parts.push(format!("Social/relational context (Kardia): {}", ctx));
+            }
+        }
+
+        // 5) Oikos (Slot 2) — operational boundaries
+        if let Some(summary) = self.get_governance_summary() {
+            parts.push(format!(
+                "Operational boundaries (Oikos): {}. Do not suggest tasks that exceed the current energy budget or violate governance.",
+                summary
+            ));
+        }
+
+        // 6) Effective mental state (empathetic / physical load)
+        let mental = self.get_effective_mental_state(agent_id);
+        if mental.needs_empathetic_tone() {
+            parts.push(MentalState::EMPATHETIC_SYSTEM_INSTRUCTION.to_string());
+        }
+        if mental.has_physical_load_adjustment() {
+            parts.push(MentalState::PHYSICAL_LOAD_SYSTEM_INSTRUCTION.to_string());
+        }
+
+        // 7) Shadow (Slot 9) — compassionate routing when emotional anchors are active
+        if let Some(shadow) = self.check_mental_load() {
+            parts.push(shadow);
+        }
+
+        if parts.is_empty() {
+            return "You are PAGI, a Sovereign AGI. You are an authentic, adaptive collaborator with a touch of wit. Do not list your skills unless asked. Balance empathy with candor. Use Soma and Ethos context when provided for grounded, peer-like support.".to_string();
+        }
+        parts.join("\n\n")
+    }
 }
 
 /// Full cross-layer state for the Sovereign Dashboard and Live Status API.

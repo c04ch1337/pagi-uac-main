@@ -8,6 +8,13 @@ export default defineConfig(() => {
       server: {
         port: 3001,
         host: '127.0.0.1',
+        // UI-only on 3001. /api is proxied ONLY to the Rust Gateway (8001). No proxy to 3001.
+        proxy: {
+          '/api': {
+            target: 'http://127.0.0.1:8001',
+            changeOrigin: true,
+          },
+        },
       },
       plugins: [react(), tailwindcss()],
       resolve: {

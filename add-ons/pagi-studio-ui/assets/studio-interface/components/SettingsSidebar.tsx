@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { X, Server, Zap, Eye, Upload, Trash2, Image as ImageIcon, Palette, UserCircle, Sun, Moon, Brain, Bot, Sliders, MessageSquare, Terminal, Search, Filter, Calendar, History, Settings2, AlertCircle, Database, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
 import { AppSettings, Message } from '../types';
+import { API_BASE_URL } from '../src/api/config';
 import LogTerminal from './LogTerminal';
 
 interface KbStatusItem {
@@ -38,29 +39,14 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ isOpen, onClose, sett
   const [kbLoading, setKbLoading] = useState(false);
   const [kbError, setKbError] = useState<string | null>(null);
 
-  const logsUrl = useMemo(() => {
-    // Preferred: just swap the chat endpoint for the logs SSE endpoint
-    if (settings.apiUrl.includes('/api/v1/chat')) {
-      return settings.apiUrl.replace(/\/api\/v1\/chat\/?$/, '/api/v1/logs');
-    }
+  const logsUrl = `${API_BASE_URL}/logs`;
 
-    // Fallback: if the URL is parseable, use its origin.
-    try {
-      const u = new URL(settings.apiUrl);
-      return `${u.origin}/api/v1/logs`;
-    } catch {
-      // Last resort: keep LogTerminal default
-      return undefined;
-    }
-  }, [settings.apiUrl]);
-
-  // Fetch KB status when sidebar opens
+  // Fetch KB status when sidebar opens (Gateway 8001 only)
   const fetchKbStatus = async () => {
     setKbLoading(true);
     setKbError(null);
     try {
-      const baseUrl = settings.apiUrl.replace('/api/v1/chat', '');
-      const response = await fetch(`${baseUrl}/api/v1/kb-status`);
+      const response = await fetch(`${API_BASE_URL}/kb-status`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data: KbStatusResponse = await response.json();
       setKbStatus(data);
@@ -75,7 +61,7 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ isOpen, onClose, sett
     if (isOpen && activeTab === 'settings') {
       fetchKbStatus();
     }
-  }, [isOpen, activeTab, settings.apiUrl]);
+  }, [isOpen, activeTab]);
 
   // Filter messages logic
   const filteredMessages = useMemo(() => {
@@ -395,10 +381,10 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ isOpen, onClose, sett
                             value={settings.llmModel}
                             onChange={(e) => setSettings(prev => ({ ...prev, llmModel: e.target.value }))}
                             className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-300 dark:border-zinc-800 rounded px-3 py-2 text-zinc-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600 focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-all font-mono"
-                            placeholder="e.g. openai/gpt-4o-mini, meta-llama/llama-3.3-70b-instruct:free"
+                            placeholder="e.g. deepseek/deepseek-v3.2, openai/gpt-4o-mini"
                         />
                         <datalist id="model-suggestions">
-                            <option value="openai/gpt-4o-mini" />
+                            <option value="deepseek/deepseek-v3.2" />
                             <option value="openai/gpt-4o" />
                             <option value="anthropic/claude-3.5-sonnet" />
                             <option value="meta-llama/llama-3.3-70b-instruct:free" />
@@ -453,14 +439,14 @@ const SettingsSidebar: React.FC<SettingsSidebarProps> = ({ isOpen, onClose, sett
                 <div className="space-y-2 pt-4 border-t border-zinc-200 dark:border-zinc-800">
                 <label className="text-xs uppercase tracking-wider text-zinc-500 font-semibold flex items-center gap-2">
                     <Server size={14} />
-                    Orchestrator Endpoint
+                    Orchestrator Endpoint (Gateway only)
                 </label>
                 <input
                     type="text"
-                    value={settings.apiUrl}
-                    onChange={(e) => setSettings(prev => ({ ...prev, apiUrl: e.target.value }))}
-                    className="w-full bg-zinc-50 dark:bg-zinc-950 border border-zinc-300 dark:border-zinc-800 rounded px-3 py-2 text-zinc-900 dark:text-zinc-300 text-sm focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600 focus:ring-1 focus:ring-zinc-400 dark:focus:ring-zinc-600 transition-all font-mono"
-                    placeholder="http://127.0.0.1:8001/api/v1/chat (Gateway)"
+                    readOnly
+                    value="http://127.0.0.1:8001/api/v1/chat"
+                    className="w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-300 dark:border-zinc-800 rounded px-3 py-2 text-zinc-600 dark:text-zinc-400 text-sm font-mono cursor-not-allowed"
+                    title="Chat is hardcoded to the Rust Gateway. No 3001, no demo."
                 />
                 </div>
 

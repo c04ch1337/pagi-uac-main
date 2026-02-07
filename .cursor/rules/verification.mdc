@@ -4,6 +4,16 @@ globs: **/*.rs, **/*.tsx, **/*.ts
 ---
 # Verification Protocol
 
+## Mandatory: Agent does all restarting and testing
+
+- **Never ask the user to restart or test.** The Agent must do it every time.
+- After any change to gateway, UI, API config, or routing:
+  1. **Kill** the affected process (e.g. `taskkill /PID <pid> /F` on Windows for the old gateway).
+  2. **Start** the service in the background (e.g. `cargo run -p pagi-gateway`).
+  3. **Wait** for the process to bind (allow time for compile if needed).
+  4. **Verify** with `curl` (e.g. `GET http://127.0.0.1:8001/api/v1/health`) and, when relevant, a chat or UI check.
+- Do not say "restart the gateway" or "run curl to verify"—do the restart and run the tests yourself, then report the result.
+
 - **Startup:** Always run services in parallel using separate named terminals.
 - **Tools:** Use the integrated Browser Tool to verify UI state. Do not rely solely on terminal exit codes.
 - **Port mapping:**
@@ -11,8 +21,10 @@ globs: **/*.rs, **/*.tsx, **/*.ts
   - UI: `3001-3099`
 - **Success criteria:** A task is not "Done" until the Agent has:
   1. Started the Rust binary (or dev server).
-  2. Verified the UI via the Browser Tool.
-  3. Confirmed zero console errors in the browser.
+  2. Restarted anything that was changed (gateway, UI server, etc.).
+  3. Run verification (curl health, and/or browser) and confirmed the result.
+  4. Verified the UI via the Browser Tool when the task touches frontend or API.
+  5. Confirmed zero console errors in the browser when UI was involved.
 
 ## Current stack (single gateway)
 

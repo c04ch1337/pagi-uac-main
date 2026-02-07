@@ -397,7 +397,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ messages, isLoading, isSt
         <div className="max-w-4xl mx-auto mt-2 flex justify-between items-center px-1">
             <div className="flex items-center gap-3">
               <p className="text-[10px] text-zinc-400 dark:text-zinc-600 font-mono">
-                  CONNECTED: {settings.apiUrl.replace(/^https?:\/\//, '')}
+                  CONNECTED: 127.0.0.1:8001/api/v1/chat
               </p>
               {inputError && (
                 <div className="flex items-center gap-1 text-[10px] text-red-500 dark:text-red-400 animate-in fade-in slide-in-from-left-1">

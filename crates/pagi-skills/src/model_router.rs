@@ -15,7 +15,7 @@ const ENV_EMBEDDINGS_API_URL: &str = "PAGI_EMBEDDINGS_API_URL";
 const ENV_EMBEDDINGS_MODEL: &str = "PAGI_EMBEDDINGS_MODEL";
 const DEFAULT_API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_EMBEDDINGS_API_URL: &str = "https://openrouter.ai/api/v1/embeddings";
-const DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
+const DEFAULT_MODEL: &str = "deepseek/deepseek-v3.2";
 const DEFAULT_EMBEDDINGS_MODEL: &str = "text-embedding-3-small";
 
 /// Mode for LLM invocation: mock (returns simulated generation) or live (calls external API).
@@ -168,9 +168,9 @@ impl ModelRouter {
         out
     }
 
-    /// Mock LLM: returns a deterministic "generated" response based on the prompt.
+    /// Mock LLM: returns a deterministic response. Never inject the skill list into the prompt
+    /// so the user never sees a "Skill Menu" — that was the "AI hallucination" (schema echo).
     fn mock_generate(&self, prompt: &str) -> String {
-        let prompt = format!("{}{}", prompt, self.build_system_prompt_from_skills());
         let preview = prompt
             .chars()
             .take(80)
@@ -191,15 +191,35 @@ impl ModelRouter {
         }
     }
 
+    /// Builds the messages array: if system_prompt is provided, [system, user] (Sovereign);
+    /// otherwise [user] with prompt (optionally with skills appendix for backward compat).
+    fn build_messages(&self, system_prompt: Option<&str>, user_prompt: &str, append_skills: bool) -> Vec<ChatMessage> {
+        let user_content = if append_skills {
+            format!("{}{}", user_prompt, self.build_system_prompt_from_skills())
+        } else {
+            user_prompt.to_string()
+        };
+        if let Some(s) = system_prompt.filter(|s| !s.is_empty()) {
+            vec![
+                ChatMessage { role: "system".to_string(), content: s.to_string() },
+                ChatMessage { role: "user".to_string(), content: user_content },
+            ]
+        } else {
+            vec![ChatMessage { role: "user".to_string(), content: user_content }]
+        }
+    }
+
     /// Live API: calls OpenRouter/OpenAI-compatible endpoint.
+    /// When system_prompt is Some, sends [system, user] (Sovereign Mission Directive); otherwise [user] only.
     async fn live_generate(
         &self,
+        system_prompt: Option<&str>,
         prompt: &str,
         model_override: Option<&str>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<(String, Option<TokenUsage>), Box<dyn std::error::Error + Send + Sync>> {
-        let prompt = format!("{}{}", prompt, self.build_system_prompt_from_skills());
+        let messages = self.build_messages(system_prompt, prompt, system_prompt.is_none());
         let url = std::env::var(ENV_LLM_API_URL).unwrap_or_else(|_| DEFAULT_API_URL.to_string());
         let key = std::env::var(ENV_LLM_API_KEY)?;
         let model = model_override
@@ -211,10 +231,7 @@ impl ModelRouter {
 
         let request_body = ChatRequest {
             model: model.clone(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            messages,
             temperature,
             max_tokens,
             stream: None, // Non-streaming mode
@@ -408,15 +425,16 @@ impl ModelRouter {
     }
 
     /// Live API with streaming: streams tokens via a channel.
-    /// Returns a receiver that yields string chunks as they arrive.
+    /// When system_prompt is Some, sends [system, user] (Sovereign); otherwise [user] only.
     pub async fn stream_generate(
         &self,
+        system_prompt: Option<&str>,
         prompt: &str,
         model_override: Option<&str>,
         temperature: Option<f32>,
         max_tokens: Option<u32>,
     ) -> Result<mpsc::Receiver<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let prompt = format!("{}{}", prompt, self.build_system_prompt_from_skills());
+        let messages = self.build_messages(system_prompt, prompt, system_prompt.is_none());
         let url = std::env::var(ENV_LLM_API_URL).unwrap_or_else(|_| DEFAULT_API_URL.to_string());
         let key = std::env::var(ENV_LLM_API_KEY)?;
         let model = model_override
@@ -433,10 +451,7 @@ impl ModelRouter {
 
         let request_body = ChatRequest {
             model: model.clone(),
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: prompt.to_string(),
-            }],
+            messages,
             temperature,
             max_tokens,
             stream: Some(true),
@@ -686,6 +701,12 @@ impl AgentSkill for ModelRouter {
             .ok_or("ModelRouter requires payload: { prompt: string } (or draft)")?
             .to_string();
 
+        // Sovereign: optional system prompt (Mission Directive from Gateway)
+        let system_prompt = payload
+            .as_ref()
+            .and_then(|p| p.get("system_prompt"))
+            .and_then(|v| v.as_str());
+
         // Extract optional parameters from payload
         let model_override = payload
             .as_ref()
@@ -705,11 +726,14 @@ impl AgentSkill for ModelRouter {
         let (generated, usage) = match self.mode {
             LlmMode::Mock => (self.mock_generate(&prompt), None),
             LlmMode::Live => {
-                match self.live_generate(&prompt, model_override, temperature, max_tokens).await {
+                match self.live_generate(system_prompt, &prompt, model_override, temperature, max_tokens).await {
                     Ok((text, usage)) => (text, usage),
                     Err(e) => {
                         eprintln!("[ModelRouter] Live generation failed: {}. Falling back to mock.", e);
-                        (format!("[Live LLM Error: {}]\n\n{}", e, self.mock_generate(&prompt)), None)
+                        (
+                            format!("[Live LLM Error: {}]\n\n{}", e, self.mock_generate(&prompt)),
+                            None,
+                        )
                     }
                 }
             }
